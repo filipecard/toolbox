@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability granted to all ToolBox windows (bubbles, tool windows, notes)",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "core:window:allow-current-monitor",
+    "core:window:allow-available-monitors",
+    "core:window:allow-scale-factor",
+    "core:window:allow-close",
+    "opener:default",
+    "store:default",
+    "notification:default",
+    "dialog:allow-open"
+  ]
+}
