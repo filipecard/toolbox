@@ -1,24 +1,11 @@
-import React from "react";
+import React, { Suspense, lazy } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { resolveRole } from "./bootstrap/resolveRole";
 import { Bubble } from "./shell/Bubble";
 import { QuickMenu } from "./shell/QuickMenu";
-import { SettingsWindow } from "./shell/SettingsWindow";
-import { CalculatorWindow } from "./tools/calculator/CalculatorWindow";
-import { NotesBar } from "./tools/notepad/NotesBar";
-import { NoteEditor } from "./tools/notepad/NoteEditor";
-import { OcrWindow } from "./tools/ocr/OcrWindow";
-import { ColorPickerWindow } from "./tools/color-picker/ColorPickerWindow";
-import { ConverterWindow } from "./tools/converter/ConverterWindow";
-import { ClipboardWindow } from "./tools/clipboard/ClipboardWindow";
-import { DevToolsWindow } from "./tools/devtools/DevToolsWindow";
-import { CompressorWindow } from "./tools/compressor/CompressorWindow";
-import { TranslatorWindow } from "./tools/translator/TranslatorWindow";
-import { TranscribeWindow } from "./tools/transcribe/TranscribeWindow";
-import { RemindersWindow } from "./tools/reminders/RemindersWindow";
-import { FileSearchWindow } from "./tools/file-search/FileSearchWindow";
-import { getSettings, onSettingsChanged } from "./shared/settingsStore";
+import { TOOL_CATALOG } from "./shell/toolCatalog";
+import { getSettings, onSettingsChanged, type AppSettings } from "./shared/settingsStore";
 import "./App.css";
 
 const label = getCurrentWindow().label;
@@ -49,27 +36,50 @@ function isLight(hex: string): boolean {
 // Applies to every window (not just panel ones) — harmless no-op for
 // bubble/quick-menu, whose background is overridden back to transparent by
 // CSS regardless of --theme-bg.
-const applyTheme = () =>
-  void getSettings().then((s) => {
-    const root = document.documentElement.style;
-    root.setProperty("--theme-bg", hexToRgba(s.theme.background, s.theme.backgroundOpacity));
-    root.setProperty("--theme-text", hexToRgba(s.theme.text, s.theme.textOpacity));
-    root.setProperty("--theme-accent", hexToRgba(s.theme.accent, s.theme.accentOpacity));
-    root.setProperty("--theme-header", hexToRgba(s.theme.header, s.theme.headerOpacity));
-    root.setProperty("--theme-button", hexToRgba(s.theme.button, s.theme.buttonOpacity));
-    root.setProperty("--theme-input", hexToRgba(s.theme.input, s.theme.inputOpacity));
-    // Opaque variant for floating surfaces (dropdowns, dialogs) that must
-    // stay readable even when the panel itself is see-through.
-    root.setProperty("--theme-bg-solid", s.theme.background);
-    // Native bits (scrollbars, <select> popups, checkboxes) follow this, so
-    // a light theme needs them light too instead of dark-on-light.
-    root.colorScheme = isLight(s.theme.background) ? "light" : "dark";
-    root.setProperty("--ui-zoom", String(s.theme.fontScale));
-    root.setProperty("--theme-font-family", `"${s.theme.fontFamily}", system-ui, sans-serif`);
-    root.setProperty("--theme-font-scale", String(s.theme.fontSizeScale));
-  });
-applyTheme();
+// Every settings save (e.g. each quick-menu checkbox in Settings) reaches
+// every window; rewriting the root variables restyles the whole document
+// even when the values are the same, so unchanged themes are skipped.
+let appliedTheme = "";
+const applyTheme = (s: AppSettings) => {
+  const key = JSON.stringify(s.theme);
+  if (key === appliedTheme) return;
+  appliedTheme = key;
+  const root = document.documentElement.style;
+  root.setProperty("--theme-bg", hexToRgba(s.theme.background, s.theme.backgroundOpacity));
+  root.setProperty("--theme-text", hexToRgba(s.theme.text, s.theme.textOpacity));
+  root.setProperty("--theme-accent", hexToRgba(s.theme.accent, s.theme.accentOpacity));
+  root.setProperty("--theme-header", hexToRgba(s.theme.header, s.theme.headerOpacity));
+  root.setProperty("--theme-button", hexToRgba(s.theme.button, s.theme.buttonOpacity));
+  root.setProperty("--theme-input", hexToRgba(s.theme.input, s.theme.inputOpacity));
+  // Opaque variant for floating surfaces (dropdowns, dialogs) that must
+  // stay readable even when the panel itself is see-through.
+  root.setProperty("--theme-bg-solid", s.theme.background);
+  // Native bits (scrollbars, <select> popups, checkboxes) follow this, so
+  // a light theme needs them light too instead of dark-on-light.
+  root.colorScheme = isLight(s.theme.background) ? "light" : "dark";
+  root.setProperty("--ui-zoom", String(s.theme.fontScale));
+  root.setProperty("--theme-font-family", `"${s.theme.fontFamily}", system-ui, sans-serif`);
+  root.setProperty("--theme-font-scale", String(s.theme.fontSizeScale));
+};
+void getSettings().then(applyTheme);
 void onSettingsChanged(applyTheme);
+
+// Everything but the always-running bubble and quick menu is split into
+// its own chunk and loaded only by the window that shows it — see
+// toolCatalog.ts's `load`.
+const SettingsWindow = lazy(() =>
+  import("./shell/SettingsWindow").then((m) => ({ default: m.SettingsWindow })),
+);
+const NotesBar = lazy(() => import("./tools/notepad/NotesBar").then((m) => ({ default: m.NotesBar })));
+const NoteEditor = lazy(() =>
+  import("./tools/notepad/NoteEditor").then((m) => ({ default: m.NoteEditor })),
+);
+const AccountWindow = lazy(() =>
+  import("./shell/AccountWindow").then((m) => ({ default: m.AccountWindow })),
+);
+const toolWindows = new Map(
+  TOOL_CATALOG.filter((t) => t.load).map((t) => [t.toolId, lazy(t.load!)]),
+);
 
 function Root() {
   switch (role.kind) {
@@ -77,23 +87,18 @@ function Root() {
       return <Bubble toolId={role.toolId} />;
     case "quick-menu":
       return <QuickMenu />;
-    case "tool":
+    case "tool": {
       if (role.toolId === "settings") return <SettingsWindow />;
-      if (role.toolId === "ocr") return <OcrWindow toolId={role.toolId} />;
-      if (role.toolId === "color-picker") return <ColorPickerWindow toolId={role.toolId} />;
-      if (role.toolId === "converter") return <ConverterWindow toolId={role.toolId} />;
-      if (role.toolId === "clipboard") return <ClipboardWindow toolId={role.toolId} />;
-      if (role.toolId === "devtools") return <DevToolsWindow toolId={role.toolId} />;
-      if (role.toolId === "compressor") return <CompressorWindow toolId={role.toolId} />;
-      if (role.toolId === "translator") return <TranslatorWindow toolId={role.toolId} />;
-      if (role.toolId === "transcribe") return <TranscribeWindow toolId={role.toolId} />;
-      if (role.toolId === "reminders") return <RemindersWindow toolId={role.toolId} />;
-      if (role.toolId === "file-search") return <FileSearchWindow toolId={role.toolId} />;
-      return <CalculatorWindow toolId={role.toolId} />;
+      const ToolWindow = toolWindows.get(role.toolId);
+      if (!ToolWindow) return <div>Ferramenta desconhecida: {role.toolId}</div>;
+      return <ToolWindow toolId={role.toolId} />;
+    }
     case "notes-bar":
       return <NotesBar />;
     case "note":
       return <NoteEditor noteId={role.noteId} />;
+    case "account":
+      return <AccountWindow />;
     default:
       return <div>Janela desconhecida: {role.label}</div>;
   }
@@ -101,6 +106,10 @@ function Root() {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Root />
+    {/* Empty themed panel while the window's chunk loads (a few ms, from
+        disk) — same look as the pre-painted background, so no flash. */}
+    <Suspense fallback={<div className="panel" />}>
+      <Root />
+    </Suspense>
   </React.StrictMode>,
 );

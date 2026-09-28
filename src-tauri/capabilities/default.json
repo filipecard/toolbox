@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability granted to all ToolBox windows (bubbles, tool windows, notes)",
-  "windows": ["*"],
+  "windows": [
+    "*"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
@@ -14,6 +16,10 @@
     "opener:default",
     "store:default",
     "notification:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-is-always-on-top",
+    "dialog:allow-save",
+    "core:window:allow-minimize"
   ]
 }

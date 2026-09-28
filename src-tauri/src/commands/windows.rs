@@ -299,7 +299,14 @@ pub async fn open_bubble(app: AppHandle, tool_id: String) -> Result<(), String> 
 /// Shows the launcher bubble (creating it if it was somehow destroyed) and
 /// brings it to front. Used by the tray icon as a guaranteed way back into
 /// the app if every window has been closed/minimized away.
+const NOT_SIGNED_IN: &str = "Entre na sua conta para usar o ToolBox.";
+
 pub fn show_launcher(app: &AppHandle) {
+    // Every way into the app (tray, sign-in, shortcuts) ends here or in one
+    // of the guarded commands below: nothing opens without a valid session.
+    if !app.state::<AppState>().account.is_active() {
+        return;
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let _ = open_bubble(app.clone(), "launcher".to_string()).await;
@@ -440,6 +447,9 @@ const QUICK_MENU_HIDE_DELAY_MS: u64 = 80;
 
 #[tauri::command]
 pub async fn open_quick_menu(app: AppHandle) -> Result<(), String> {
+    if !app.state::<AppState>().account.is_active() {
+        return Err(NOT_SIGNED_IN.into());
+    }
     if let Some(bubble) = app.get_webview_window("bubble-launcher") {
         bubble.hide().map_err(|e| e.to_string())?;
     }
@@ -551,7 +561,11 @@ pub async fn open_quick_menu(app: AppHandle) -> Result<(), String> {
             // away from it — treated the same as pressing its old
             // minimize button: hide the bar, bring the bubble back.
             WindowEvent::Focused(false) => {
-                let _ = collapse_quick_menu(app_handle.clone());
+                if quick_menu_keeping_open(&app_handle) {
+                    refocus_quick_menu(&app_handle);
+                } else {
+                    let _ = collapse_quick_menu(app_handle.clone());
+                }
             }
             _ => {}
         });
@@ -559,6 +573,52 @@ pub async fn open_quick_menu(app: AppHandle) -> Result<(), String> {
         let _ = app.emit("quick-menu-opened", place_right);
     })
     .map_err(|e| e.to_string())
+}
+
+/// How long after opening something from the quick menu its focus loss is
+/// treated as "the new window took it" rather than a click outside. Covers
+/// a cold WebView2 window grabbing focus a few hundred ms after creation.
+const QUICK_MENU_KEEP_OPEN: std::time::Duration = std::time::Duration::from_millis(1000);
+
+fn quick_menu_keeping_open(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .quick_menu_keep_open_until
+        .lock()
+        .unwrap()
+        .is_some_and(|until| std::time::Instant::now() < until)
+}
+
+/// Takes focus back from the window the quick menu just opened, so the
+/// bar stays up and the next click anywhere else (that tool included)
+/// closes it as usual. Slightly deferred: the activation that stole focus
+/// has to finish first or it wins again.
+fn refocus_quick_menu(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let app_for_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(win) = app_for_main.get_webview_window("quick-menu") {
+                if win.is_visible().unwrap_or(false) {
+                    let _ = win.set_focus();
+                }
+            }
+        });
+    });
+}
+
+/// Opening a tool (or the notes bar) from the quick menu: unlike every
+/// other way of opening one, the bar stays open — it only closes on a
+/// click outside it.
+#[tauri::command]
+pub async fn open_from_quick_menu(app: AppHandle, tool_id: String) -> Result<(), String> {
+    *app.state::<AppState>().quick_menu_keep_open_until.lock().unwrap() =
+        Some(std::time::Instant::now() + QUICK_MENU_KEEP_OPEN);
+    if tool_id == "notes" {
+        open_notes_bar(app).await
+    } else {
+        expand_tool(app, tool_id).await
+    }
 }
 
 /// Handles the quick-menu window's native `Moved` event: skips it if it was
@@ -646,18 +706,71 @@ fn on_quick_menu_moved(app: &AppHandle, position: tauri::PhysicalPosition<i32>) 
     });
 }
 
+/// A minimized (hidden) window still keeps its whole WebView2 alive —
+/// 40-50 MB each (its own renderer process) — so after this long hidden
+/// it's destroyed outright and recreated on the next open (~0.3-0.5 s).
+const IDLE_DESTROY_AFTER: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+/// Tools that hold work or state the user expects to survive minimizing:
+/// an in-progress compression batch or transcription, the running timer's
+/// countdown. (The calculator persists its state, so it can be destroyed.)
+const KEEP_ALIVE_TOOLS: &[&str] = &["compressor", "transcribe", "reminders"];
+
+/// Invalidates any pending idle-destroy for `label` and returns the new
+/// generation.
+fn bump_hide_gen(app: &AppHandle, label: &str) -> u64 {
+    let state = app.state::<AppState>();
+    let mut gens = state.hide_gen.lock().unwrap();
+    let gen = gens.entry(label.to_string()).or_insert(0);
+    *gen += 1;
+    *gen
+}
+
+/// Call whenever a window is shown again, so an idle-destroy scheduled at
+/// its last hide doesn't fire.
+fn mark_shown(app: &AppHandle, label: &str) {
+    bump_hide_gen(app, label);
+}
+
+/// Destroys `label` after `IDLE_DESTROY_AFTER` if it's still hidden and
+/// hasn't been shown/hidden again since.
+fn schedule_idle_destroy(app: &AppHandle, label: String) {
+    let gen = bump_hide_gen(app, &label);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(IDLE_DESTROY_AFTER);
+        let current = app.state::<AppState>().hide_gen.lock().unwrap().get(&label).copied();
+        if current != Some(gen) {
+            return;
+        }
+        if let Some(win) = app.get_webview_window(&label) {
+            if !win.is_visible().unwrap_or(true) {
+                // destroy(), not close(): close fires CloseRequested, which
+                // note windows treat as "reopen the notes bar".
+                let _ = win.destroy();
+            }
+        }
+    });
+}
+
 fn collapse_tool_internal(app: &AppHandle, tool_id: &str) -> Result<(), String> {
     let tool_label = format!("tool-{tool_id}");
     if let Some(win) = app.get_webview_window(&tool_label) {
         win.hide().map_err(|e| e.to_string())?;
+        if !KEEP_ALIVE_TOOLS.contains(&tool_id) {
+            schedule_idle_destroy(app, tool_label);
+        }
     }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn expand_tool(app: AppHandle, tool_id: String) -> Result<(), String> {
+    if !app.state::<AppState>().account.is_active() {
+        return Err(NOT_SIGNED_IN.into());
+    }
     let tool_label = format!("tool-{tool_id}");
     if let Some(win) = app.get_webview_window(&tool_label) {
+        mark_shown(&app, &tool_label);
         win.show().map_err(|e| e.to_string())?;
         win.set_focus().ok();
         return Ok(());
@@ -726,14 +839,19 @@ pub fn collapse_tool(app: AppHandle, tool_id: String) -> Result<(), String> {
 fn collapse_notes_bar_internal(app: &AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("notes-bar") {
         win.hide().map_err(|e| e.to_string())?;
+        schedule_idle_destroy(app, "notes-bar".to_string());
     }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn open_notes_bar(app: AppHandle) -> Result<(), String> {
+    if !app.state::<AppState>().account.is_active() {
+        return Err(NOT_SIGNED_IN.into());
+    }
     let label = "notes-bar";
     if let Some(win) = app.get_webview_window(label) {
+        mark_shown(&app, label);
         win.show().map_err(|e| e.to_string())?;
         win.set_focus().ok();
         return Ok(());
@@ -793,9 +911,11 @@ fn collapse_note_internal(app: &AppHandle, note_id: &str) -> Result<(), String> 
     let label = format!("note-{note_id}");
     if let Some(win) = app.get_webview_window(&label) {
         win.hide().map_err(|e| e.to_string())?;
+        schedule_idle_destroy(app, label);
     }
 
     if let Some(bar) = app.get_webview_window("notes-bar") {
+        mark_shown(app, "notes-bar");
         bar.show().map_err(|e| e.to_string())?;
         bar.set_focus().ok();
     } else {
@@ -815,10 +935,14 @@ pub fn collapse_note(app: AppHandle, note_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn open_note(app: AppHandle, note_id: String) -> Result<(), String> {
+    if !app.state::<AppState>().account.is_active() {
+        return Err(NOT_SIGNED_IN.into());
+    }
     // Notes bar stays open and multiple notes can be open at once — opening
     // one is independent of the bar's (or any other note's) visibility.
     let label = format!("note-{note_id}");
     if let Some(win) = app.get_webview_window(&label) {
+        mark_shown(&app, &label);
         win.show().map_err(|e| e.to_string())?;
         win.set_focus().ok();
         return Ok(());
@@ -873,4 +997,55 @@ pub async fn open_note(app: AppHandle, note_id: String) -> Result<(), String> {
         });
     })
     .map_err(|e| e.to_string())
+}
+
+fn is_visible(app: &AppHandle, label: &str) -> bool {
+    app.get_webview_window(label)
+        .is_some_and(|w| w.is_visible().unwrap_or(false))
+}
+
+fn is_visible_and_focused(app: &AppHandle, label: &str) -> bool {
+    app.get_webview_window(label)
+        .is_some_and(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false))
+}
+
+/// What a global shortcut does (see shortcuts.rs): opens the target — or
+/// brings it to the front if it's open behind something — and closes it
+/// again when it's already the focused window, so one key combination
+/// toggles it. `action` is a toolId, "notes" (notes bar) or "quick-menu".
+pub fn toggle_action(app: &AppHandle, action: &str) {
+    if !app.state::<AppState>().account.is_active() {
+        crate::account::show_account_window(app);
+        return;
+    }
+    let app = app.clone();
+    let action = action.to_string();
+    tauri::async_runtime::spawn(async move {
+        let result = match action.as_str() {
+            "quick-menu" => {
+                if is_visible(&app, "quick-menu") {
+                    collapse_quick_menu(app)
+                } else {
+                    open_quick_menu(app).await
+                }
+            }
+            "notes" => {
+                if is_visible_and_focused(&app, "notes-bar") {
+                    collapse_notes_bar_internal(&app)
+                } else {
+                    open_notes_bar(app).await
+                }
+            }
+            tool_id => {
+                if is_visible_and_focused(&app, &format!("tool-{tool_id}")) {
+                    collapse_tool_internal(&app, tool_id)
+                } else {
+                    expand_tool(app, tool_id.to_string()).await
+                }
+            }
+        };
+        if let Err(e) = result {
+            eprintln!("shortcut action '{action}' failed: {e}");
+        }
+    });
 }

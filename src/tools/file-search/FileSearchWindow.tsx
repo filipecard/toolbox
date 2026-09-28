@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { planLabel, usePlanStatus } from "../../shared/plans";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -60,6 +61,8 @@ export function FileSearchWindow({ toolId }: { toolId: string }) {
   const [results, setResults] = useState<FileSearchResult[]>([]);
   const [total, setTotal] = useState(0);
   const [truncated, setTruncated] = useState(false);
+  const [shownLimit, setShownLimit] = useState(0);
+  const plan = usePlanStatus();
   const [status, setStatus] = useState<FileIndexStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
@@ -107,6 +110,7 @@ export function FileSearchWindow({ toolId }: { toolId: string }) {
           setResults(res.results);
           setTotal(res.total);
           setTruncated(res.truncated);
+          setShownLimit(res.limit);
           setError(null);
         })
         .catch((e) => {
@@ -211,7 +215,10 @@ export function FileSearchWindow({ toolId }: { toolId: string }) {
         {ready && hasQuery && total > 0 && (
           <p className="settings-hint">
             {formatCount(total)} resultado{total === 1 ? "" : "s"}
-            {truncated && " — mostrando os primeiros 200 (plano pago remove esse limite)"}
+            {truncated &&
+              ` — mostrando os primeiros ${formatCount(shownLimit)} (limite do plano ${
+                plan ? planLabel(plan, "file-search") : ""
+              }; faça upgrade para ver mais)`}
           </p>
         )}
 

@@ -5,6 +5,7 @@ import { IconPicker } from "./IconPicker";
 import { collapseTool, listSystemFonts } from "../shared/tauri";
 import {
   getSettings,
+  onSettingsReplaced,
   saveSettings,
   DEFAULT_BUBBLE_COLOR,
   DEFAULT_BUBBLE_OPACITY,
@@ -17,6 +18,9 @@ import {
 } from "../shared/settingsStore";
 import { SETTINGS_ICON_SRC, TOOL_CATALOG } from "./toolCatalog";
 import { SvgIcon, ToolIcon } from "./ToolIcon";
+import { ShortcutsSection } from "./ShortcutsSection";
+import { BackupSection } from "./BackupSection";
+import { AccountSection } from "./AccountSection";
 
 const THEME_FIELDS: {
   key: "background" | "text" | "header" | "button" | "input" | "accent";
@@ -45,9 +49,13 @@ export function SettingsWindow() {
 
   useEffect(() => {
     void getSettings().then(setSettings);
+    // Picks up changes made elsewhere (a backup import) so this window's
+    // next edit doesn't write its stale copy back over them.
+    const unlisten = onSettingsReplaced(setSettings);
     void listSystemFonts()
       .then(setSystemFonts)
       .catch(() => setSystemFonts([]));
+    return () => void unlisten.then((f) => f());
   }, []);
 
   const update = (next: AppSettings) => {
@@ -122,6 +130,8 @@ export function SettingsWindow() {
         onClose={() => void getCurrentWindow().close()}
       />
       <div className="settings-body">
+        <AccountSection />
+
         <section className="settings-section">
           <h3 className="settings-heading">Itens do menu rápido</h3>
           <div className="settings-item-list">
@@ -386,6 +396,10 @@ export function SettingsWindow() {
             Depois é só clicar em "★ Meu tema" para voltar a ele.
           </p>
         </section>
+
+        <ShortcutsSection settings={settings} update={update} />
+
+        <BackupSection />
 
         <section className="settings-section">
           <h3 className="settings-heading">Restaurar tudo</h3>

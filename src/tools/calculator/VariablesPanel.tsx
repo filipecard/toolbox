@@ -10,6 +10,8 @@ export function VariablesPanel({
   onRename,
   onReorder,
   onInsertName,
+  atLimit,
+  limitHint,
 }: {
   variables: Variable[];
   results: Record<string, VariableResult>;
@@ -19,6 +21,9 @@ export function VariablesPanel({
   onRename: (id: string, name: string) => void;
   onReorder: (fromIndex: number, toIndex: number) => void;
   onInsertName: (name: string) => void;
+  /** Plan's variable cap reached — adding is disabled. */
+  atLimit: boolean;
+  limitHint: string;
 }) {
   const dragIndex = useRef<number | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -37,6 +42,7 @@ export function VariablesPanel({
   };
 
   const handleAdd = () => {
+    if (atLimit) return; // keeps what was typed instead of silently discarding it
     onAdd(newName, newValue);
     setNewName("");
     setNewValue("");
@@ -50,6 +56,7 @@ export function VariablesPanel({
     <div className="calc-variables">
       <div className="calc-variables-header">
         <span>Variáveis</span>
+        <span className="settings-hint">{limitHint}</span>
       </div>
       <div className="var-new-row">
         <input
@@ -68,7 +75,12 @@ export function VariablesPanel({
           placeholder="valor"
           spellCheck={false}
         />
-        <button className="var-add-btn" onClick={handleAdd} title="Adicionar variável">
+        <button
+          className="var-add-btn"
+          onClick={handleAdd}
+          disabled={atLimit}
+          title={atLimit ? "Limite de variáveis do plano atingido" : "Adicionar variável"}
+        >
           + Adicionar
         </button>
       </div>

@@ -1,5 +1,4 @@
 pub mod clipboard;
-pub mod compressor;
 pub mod file_search;
 pub mod fonts;
 pub mod notes;
@@ -9,3 +8,5 @@ pub mod transcribe;
 pub mod whisper_paths;
 pub mod whisper_setup;
 pub mod windows;
+pub mod pdf_compress;
+pub mod raw_upload;

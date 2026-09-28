@@ -9,10 +9,9 @@ import {
   setWhisperModelPath,
   setupWhisper,
   transcribeAudio,
-  transcribeQuota,
   whisperSetupStatus,
-  type TranscribeQuota,
 } from "../../shared/tauri";
+import { formatLimit, formatQuota, isQuotaExceeded, usePlanStatus, useQuota } from "../../shared/plans";
 import { toWavBytes } from "./audioConvert";
 import { WHISPER_LANGUAGES } from "./whisperLanguages";
 
@@ -44,12 +43,12 @@ export function TranscribeWindow({ toolId }: { toolId: string }) {
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [stage, setStage] = useState<"converting" | "transcribing" | null>(null);
-  const [quota, setQuota] = useState<TranscribeQuota | null>(null);
+  const [quota, setQuota] = useQuota("transcribeDaily");
+  const plan = usePlanStatus();
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    void transcribeQuota().then(setQuota);
     void whisperSetupStatus().then((s) => setReady(s.ready));
     void getWhisperModelPath().then((p) => setModelPathInput(p ?? ""));
   }, []);
@@ -93,9 +92,9 @@ export function TranscribeWindow({ toolId }: { toolId: string }) {
       setStage("converting");
       const wavBytes = await toWavBytes(file);
       setStage("transcribing");
-      const result = await transcribeAudio(Array.from(wavBytes), "audio.wav", lang);
+      const result = await transcribeAudio(wavBytes, "audio.wav", lang);
       setText(result.text);
-      setQuota({ used: result.used, limit: result.limit });
+      setQuota(result.quota);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -103,7 +102,7 @@ export function TranscribeWindow({ toolId }: { toolId: string }) {
     }
   };
 
-  const quotaExceeded = quota ? quota.used >= quota.limit : false;
+  const quotaExceeded = isQuotaExceeded(quota);
   const busy = stage !== null;
   const settingUp = setupProgress !== null;
 
@@ -211,7 +210,9 @@ export function TranscribeWindow({ toolId }: { toolId: string }) {
               </button>
               {quota && (
                 <span className="ocr-quota">
-                  Grátis: {quota.used}/{quota.limit} hoje
+                  {formatQuota(quota)}
+                  {plan && plan.limits.transcribeFileMb !== null &&
+                    ` · até ${formatLimit(plan.limits.transcribeFileMb)} MB por áudio`}
                 </span>
               )}
             </div>

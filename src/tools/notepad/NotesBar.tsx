@@ -4,10 +4,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TitleBar } from "../../shell/TitleBar";
 import { useWindowMove } from "../../shell/useWindowMove";
 import { collapseNotesBar } from "../../shared/tauri";
-import { createNote, deleteNote, listNotes, openNote, type NoteMeta } from "./notesApi";
+import { createNote, deleteNote, listNotes, openNote, searchNotes, type NoteMeta } from "./notesApi";
 
 export function NotesBar() {
   const [notes, setNotes] = useState<NoteMeta[]>([]);
+  const [query, setQuery] = useState("");
+  /** Ids matching the search (title or content), or null when not searching. */
+  const [matches, setMatches] = useState<Set<string> | null>(null);
   useWindowMove("notes-bar.pos");
 
   const refresh = () => {
@@ -23,6 +26,21 @@ export function NotesBar() {
     });
     return () => unlisten?.();
   }, []);
+
+  // Debounced full-text search, re-run when notes change too.
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setMatches(null);
+      return;
+    }
+    const id = setTimeout(() => {
+      void searchNotes(q).then((ids) => setMatches(new Set(ids)));
+    }, 200);
+    return () => clearTimeout(id);
+  }, [query, notes]);
+
+  const visible = matches ? notes.filter((n) => matches.has(n.id)) : notes;
 
   const handleCreate = async () => {
     const note = await createNote();
@@ -44,7 +62,16 @@ export function NotesBar() {
         onClose={() => void getCurrentWindow().close()}
       />
       <div className="notes-strip">
-        {notes.map((note) => (
+        <input
+          className="notes-search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="🔍 Buscar"
+          title="Busca no título e no conteúdo das notas"
+          spellCheck={false}
+        />
+        {matches && visible.length === 0 && <span className="notes-no-match">Nada encontrado</span>}
+        {visible.map((note) => (
           <button key={note.id} className="note-tab" onClick={() => void openNote(note.id)}>
             <span className="note-tab-title">{note.title || "Sem título"}</span>
             <span className="note-tab-close" onClick={(e) => void handleDelete(note.id, e)}>

@@ -4,9 +4,13 @@ export type WindowRole =
   | { kind: "tool"; toolId: string }
   | { kind: "notes-bar" }
   | { kind: "note"; noteId: string }
+  | { kind: "account" }
   | { kind: "unknown"; label: string };
 
 export function resolveRole(label: string): WindowRole {
+  if (label === "account") {
+    return { kind: "account" };
+  }
   if (label === "quick-menu") {
     return { kind: "quick-menu" };
   }

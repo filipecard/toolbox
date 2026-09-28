@@ -1,16 +1,23 @@
+use crate::plans::{self, Feature};
 use crate::state::AppState;
 use rayon::prelude::*;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Manager};
 
-/// Local-only placeholder for the real (server-enforced) paywall — same
-/// approach as OCR's daily counter, but gating *result volume* per search
-/// instead of uses per day, matching the roadmap's "heavy query volume"
-/// framing for this tool's paid tier.
-const MAX_RESULTS: usize = 200;
+/// Results per search are capped by the plan (see plans.rs). Diamante has
+/// no plan cap, but each shown result costs a disk stat (size/date), so
+/// this technical ceiling keeps a one-letter query on a whole drive from
+/// stalling the UI.
+const TECHNICAL_MAX_RESULTS: usize = 20_000;
+/// On-disk copy of the last built index (see `save_cache`/`load_cache`).
+const CACHE_FILE: &str = "file-index.bin";
+const CACHE_MAGIC: &[u8; 6] = b"TBIDX1";
 /// An index older than this is rebuilt in the background the next time the
 /// tool asks for it (the old one keeps answering queries meanwhile). There's
 /// no live filesystem watcher yet, so this is what bounds staleness.
@@ -98,6 +105,8 @@ pub struct FileSearchResponse {
     pub results: Vec<FileSearchResult>,
     pub total: usize,
     pub truncated: bool,
+    /// How many results this search was allowed to show.
+    pub limit: usize,
 }
 
 #[derive(Serialize)]
@@ -163,6 +172,7 @@ pub fn file_index_status(state: tauri::State<'_, AppState>) -> FileIndexStatus {
 /// Returns immediately — the frontend polls `file_index_status`.
 #[tauri::command]
 pub fn ensure_file_index(
+    app: AppHandle,
     state: tauri::State<'_, AppState>,
     root: String,
     force: bool,
@@ -199,22 +209,135 @@ pub fn ensure_file_index(
     }
 
     let store_for_build = store.clone();
+    let cache_path = app.path().app_cache_dir().ok().map(|dir| dir.join(CACHE_FILE));
     std::thread::spawn(move || {
+        // After an app restart there's no index in memory: serve the last
+        // saved one right away (possibly a bit stale) while the fresh walk
+        // below runs, instead of making the user wait for a full rescan.
+        let has_index = store_for_build.ready.read().unwrap().is_some();
+        if !has_index {
+            if let Some(cached) = cache_path.as_deref().and_then(|p| load_cache(p, &root)) {
+                let mut ready = store_for_build.ready.write().unwrap();
+                if ready.is_none() && store_for_build.generation.load(Ordering::SeqCst) == generation {
+                    *ready = Some(Arc::new(cached));
+                }
+            }
+        }
+
         let start = Instant::now();
         let entries = build_index(&store_for_build, generation, &roots);
         if store_for_build.generation.load(Ordering::SeqCst) != generation {
             return; // superseded by a newer build, which owns `building` now
         }
-        *store_for_build.ready.write().unwrap() = Some(Arc::new(FileIndex {
+        let index = Arc::new(FileIndex {
             root,
             entries,
             built_at_ms: now_ms(),
             duration_ms: start.elapsed().as_millis() as u64,
-        }));
+        });
+        *store_for_build.ready.write().unwrap() = Some(index.clone());
         *store_for_build.building.lock().unwrap() = None;
+        if let Some(path) = cache_path {
+            if let Err(e) = save_cache(&path, &index) {
+                eprintln!("file search: failed to save index cache: {e}");
+            }
+        }
     });
 
     Ok(status_of(&store))
+}
+
+/// Plain binary layout: magic, root, timestamps, then each entry as
+/// (parent u32, is_dir u8, name length u16, UTF-8 name). `name_lower` isn't
+/// stored — it's recomputed on load, keeping the file about half the size.
+fn save_cache(path: &Path, index: &FileIndex) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // Written to a temp file and renamed, so a crash mid-write can't leave
+    // a truncated cache behind.
+    let tmp = path.with_extension("tmp");
+    {
+        let mut w = BufWriter::new(File::create(&tmp)?);
+        w.write_all(CACHE_MAGIC)?;
+        write_bytes(&mut w, index.root.as_bytes())?;
+        w.write_all(&index.built_at_ms.to_le_bytes())?;
+        w.write_all(&index.duration_ms.to_le_bytes())?;
+        w.write_all(&(index.entries.len() as u32).to_le_bytes())?;
+        for e in &index.entries {
+            w.write_all(&e.parent.to_le_bytes())?;
+            w.write_all(&[e.is_dir as u8])?;
+            let name = e.name.as_bytes();
+            let len = name.len().min(u16::MAX as usize);
+            w.write_all(&(len as u16).to_le_bytes())?;
+            w.write_all(&name[..len])?;
+        }
+        w.flush()?;
+    }
+    std::fs::rename(tmp, path)
+}
+
+fn write_bytes(w: &mut impl Write, bytes: &[u8]) -> std::io::Result<()> {
+    w.write_all(&(bytes.len() as u32).to_le_bytes())?;
+    w.write_all(bytes)
+}
+
+/// Returns the cached index only if it was built for `root`.
+fn load_cache(path: &Path, root: &str) -> Option<FileIndex> {
+    let mut r = BufReader::new(File::open(path).ok()?);
+    let mut magic = [0u8; 6];
+    r.read_exact(&mut magic).ok()?;
+    if &magic != CACHE_MAGIC {
+        return None;
+    }
+    let cached_root = String::from_utf8(read_bytes(&mut r)?).ok()?;
+    if cached_root != root {
+        return None;
+    }
+    let built_at_ms = u64::from_le_bytes(read_array(&mut r)?);
+    let duration_ms = u64::from_le_bytes(read_array(&mut r)?);
+    let count = u32::from_le_bytes(read_array(&mut r)?) as usize;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let parent = u32::from_le_bytes(read_array(&mut r)?);
+        let [is_dir] = read_array::<1>(&mut r)?;
+        let len = u16::from_le_bytes(read_array(&mut r)?) as usize;
+        let mut name = vec![0u8; len];
+        r.read_exact(&mut name).ok()?;
+        let name = String::from_utf8_lossy(&name).into_owned();
+        entries.push(IndexEntry {
+            name_lower: name.to_lowercase().into(),
+            name: name.into(),
+            parent,
+            is_dir: is_dir != 0,
+        });
+    }
+    // A corrupt parent pointer would make full_path index out of bounds.
+    if entries.iter().any(|e| e.parent != NO_PARENT && e.parent as usize >= count) {
+        return None;
+    }
+    Some(FileIndex {
+        root: cached_root,
+        entries,
+        built_at_ms,
+        duration_ms,
+    })
+}
+
+fn read_array<const N: usize>(r: &mut impl Read) -> Option<[u8; N]> {
+    let mut buf = [0u8; N];
+    r.read_exact(&mut buf).ok()?;
+    Some(buf)
+}
+
+fn read_bytes(r: &mut impl Read) -> Option<Vec<u8>> {
+    let len = u32::from_le_bytes(read_array(r)?) as usize;
+    if len > 64 * 1024 {
+        return None;
+    }
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf).ok()?;
+    Some(buf)
 }
 
 fn build_index(store: &FileIndexStore, generation: u64, roots: &[PathBuf]) -> Vec<IndexEntry> {
@@ -300,6 +423,7 @@ fn walk_dir<'s>(
 /// disk (for size/date), so query cost doesn't depend on disk speed.
 #[tauri::command]
 pub async fn search_files(
+    app: AppHandle,
     state: tauri::State<'_, AppState>,
     root: String,
     query: String,
@@ -315,6 +439,7 @@ pub async fn search_files(
             results: vec![],
             total: 0,
             truncated: false,
+            limit: 0,
         });
     }
     let index = state
@@ -325,6 +450,9 @@ pub async fn search_files(
         .clone()
         .filter(|i| i.root == root)
         .ok_or_else(|| "O índice dessa pasta ainda está sendo criado.".to_string())?;
+
+    let max_results = plans::limit(&app, Feature::FileSearchResults)
+        .map_or(TECHNICAL_MAX_RESULTS, |l| (l as usize).min(TECHNICAL_MAX_RESULTS));
 
     tauri::async_runtime::spawn_blocking(move || {
         let first_term = terms.first().cloned().unwrap_or_default();
@@ -351,9 +479,9 @@ pub async fn search_files(
                     .cmp(&index.entries[b.1 as usize].name_lower)
             })
         };
-        if matches.len() > MAX_RESULTS {
-            matches.select_nth_unstable_by(MAX_RESULTS, cmp);
-            matches.truncate(MAX_RESULTS);
+        if matches.len() > max_results {
+            matches.select_nth_unstable_by(max_results, cmp);
+            matches.truncate(max_results);
         }
         matches.sort_unstable_by(cmp);
 
@@ -381,9 +509,58 @@ pub async fn search_files(
         FileSearchResponse {
             results,
             total,
-            truncated: total > MAX_RESULTS,
+            truncated: total > max_results,
+            limit: max_results,
         }
     })
     .await
     .map_err(|e| format!("Falha na busca: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, parent: u32, is_dir: bool) -> IndexEntry {
+        IndexEntry {
+            name: name.into(),
+            name_lower: name.to_lowercase().into(),
+            parent,
+            is_dir,
+        }
+    }
+
+    #[test]
+    fn cache_round_trips_and_checks_root() {
+        let index = FileIndex {
+            root: r"C:\Users\teste".into(),
+            entries: vec![
+                entry(r"C:\Users\teste", NO_PARENT, true),
+                entry("Documentos", 0, true),
+                entry("Relatório Final.PDF", 1, false),
+            ],
+            built_at_ms: 123,
+            duration_ms: 45,
+        };
+        let path = std::env::temp_dir().join(format!("toolbox-index-test-{}.bin", std::process::id()));
+        save_cache(&path, &index).unwrap();
+
+        let loaded = load_cache(&path, r"C:\Users\teste").expect("cache should load");
+        assert_eq!(loaded.entries.len(), 3);
+        assert_eq!(&*loaded.entries[2].name, "Relatório Final.PDF");
+        assert_eq!(&*loaded.entries[2].name_lower, "relatório final.pdf");
+        assert_eq!(loaded.built_at_ms, 123);
+        assert_eq!(loaded.full_path(2), PathBuf::from(r"C:\Users\teste\Documentos\Relatório Final.PDF"));
+
+        assert!(load_cache(&path, r"D:\outra").is_none(), "other root must not load");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn corrupt_cache_is_rejected() {
+        let path = std::env::temp_dir().join(format!("toolbox-index-bad-{}.bin", std::process::id()));
+        std::fs::write(&path, b"TBIDX1\xff\xff\xff\xff").unwrap();
+        assert!(load_cache(&path, "x").is_none());
+        let _ = std::fs::remove_file(path);
+    }
 }

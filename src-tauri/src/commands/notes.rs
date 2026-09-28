@@ -19,7 +19,7 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-fn notes_dir(app: &AppHandle) -> PathBuf {
+pub(crate) fn notes_dir(app: &AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
         .expect("no app data dir")
@@ -30,7 +30,7 @@ fn ensure_notes_dir(app: &AppHandle) -> Result<(), String> {
     fs::create_dir_all(notes_dir(app)).map_err(|e| e.to_string())
 }
 
-fn read_index(app: &AppHandle) -> Vec<NoteMeta> {
+pub(crate) fn read_index(app: &AppHandle) -> Vec<NoteMeta> {
     let path = notes_dir(app).join("index.json");
     match fs::read_to_string(path) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
@@ -38,7 +38,7 @@ fn read_index(app: &AppHandle) -> Vec<NoteMeta> {
     }
 }
 
-fn write_index(app: &AppHandle, index: &[NoteMeta]) -> Result<(), String> {
+pub(crate) fn write_index(app: &AppHandle, index: &[NoteMeta]) -> Result<(), String> {
     ensure_notes_dir(app)?;
     let dir = notes_dir(app);
     let tmp_path = dir.join("index.json.tmp");
@@ -48,7 +48,7 @@ fn write_index(app: &AppHandle, index: &[NoteMeta]) -> Result<(), String> {
     fs::rename(&tmp_path, &final_path).map_err(|e| e.to_string())
 }
 
-fn write_note_content(app: &AppHandle, id: &str, content: &str) -> Result<(), String> {
+pub(crate) fn write_note_content(app: &AppHandle, id: &str, content: &str) -> Result<(), String> {
     ensure_notes_dir(app)?;
     let dir = notes_dir(app);
     let tmp_path = dir.join(format!("{id}.md.tmp"));
@@ -61,6 +61,28 @@ fn write_note_content(app: &AppHandle, id: &str, content: &str) -> Result<(), St
 pub fn list_notes(app: AppHandle) -> Result<Vec<NoteMeta>, String> {
     ensure_notes_dir(&app)?;
     Ok(read_index(&app))
+}
+
+/// Ids of notes whose title or content contains `query` (case-insensitive),
+/// for the notes bar's search. Notes are small plain-text files, so a
+/// straight scan is instant for any realistic number of notes.
+#[tauri::command]
+pub fn search_notes(app: AppHandle, query: String) -> Vec<String> {
+    let query = query.trim().to_lowercase();
+    let index = read_index(&app);
+    if query.is_empty() {
+        return index.into_iter().map(|m| m.id).collect();
+    }
+    let dir = notes_dir(&app);
+    index
+        .into_iter()
+        .filter(|m| {
+            m.title.to_lowercase().contains(&query)
+                || fs::read_to_string(dir.join(format!("{}.md", m.id)))
+                    .is_ok_and(|c| c.to_lowercase().contains(&query))
+        })
+        .map(|m| m.id)
+        .collect()
 }
 
 #[tauri::command]

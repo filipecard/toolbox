@@ -1,24 +1,40 @@
+mod account;
+mod backup;
 mod commands;
+mod plans;
 mod state;
+mod shortcuts;
+mod storage;
 mod window_registry;
 
-use commands::clipboard::{clear_clipboard_history, list_clipboard_history, remove_clipboard_entry};
-use commands::compressor::{compressor_quota, consume_compressor_use};
+use commands::clipboard::{
+    add_clipboard_snippet, clear_clipboard_history, clipboard_image, copy_clipboard_entry,
+    list_clipboard_history, remove_clipboard_entry, set_clipboard_pinned, update_clipboard_snippet,
+};
+use commands::pdf_compress::compress_pdf;
 use commands::file_search::{
     default_search_root, ensure_file_index, file_index_status, search_files,
 };
 use commands::fonts::list_system_fonts;
-use commands::notes::{create_note, delete_note, list_notes, load_note, rename_note, save_note};
-use commands::ocr::{extract_text_from_image, ocr_quota};
-use commands::reminders::{add_reminder, list_reminders, remove_reminder};
-use commands::transcribe::{
-    get_whisper_model_path, set_whisper_model_path, transcribe_audio, transcribe_quota,
+use backup::{export_backup, import_backup};
+use commands::notes::{
+    create_note, delete_note, list_notes, load_note, rename_note, save_note, search_notes,
 };
+use commands::ocr::extract_text_from_image;
+use commands::reminders::{add_reminder, list_reminders, remove_reminder};
+use commands::transcribe::{get_whisper_model_path, set_whisper_model_path, transcribe_audio};
 use commands::whisper_setup::{setup_whisper, whisper_setup_status};
 use commands::windows::{
     collapse_note, collapse_notes_bar, collapse_quick_menu, collapse_tool, expand_tool,
-    open_bubble, open_note, open_notes_bar, open_quick_menu, set_bubble_size, show_launcher,
+    open_bubble, open_from_quick_menu, open_note, open_notes_bar, open_quick_menu, set_bubble_size,
 };
+use account::dependencies::{dependency_status, install_dependency};
+use account::{
+    account_cancel_login, account_dev_mode, account_logout, account_open_site, account_retry,
+    account_start_login, account_status,
+};
+use shortcuts::apply_shortcuts;
+use plans::{consume_feature_use, feature_quota, plan_status};
 use state::AppState;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -32,17 +48,22 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| shortcuts::handle(app, shortcut, event.state()))
+                .build(),
+        )
         .manage(AppState::default())
         .setup(|app| {
-            let handle = app.handle().clone();
-            tauri::async_runtime::block_on(async {
-                open_bubble(handle, "launcher".to_string())
-                    .await
-                    .expect("failed to create launcher bubble");
-            });
+            storage::migrate_legacy(app.handle());
+
+            // Opens the bubble if the saved session is valid, the sign-in
+            // window otherwise (see account/).
+            account::start(app.handle());
 
             commands::clipboard::start_watcher(app.handle().clone());
             commands::reminders::start_watcher(app.handle().clone());
+            shortcuts::apply_from_settings(app.handle());
 
             let quit_item = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&quit_item])?;
@@ -64,7 +85,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        show_launcher(tray.app_handle());
+                        account::reveal(tray.app_handle());
                     }
                 })
                 .build(app)?;
@@ -79,6 +100,7 @@ pub fn run() {
             expand_tool,
             collapse_tool,
             open_notes_bar,
+            open_from_quick_menu,
             collapse_notes_bar,
             open_note,
             collapse_note,
@@ -88,15 +110,30 @@ pub fn run() {
             save_note,
             rename_note,
             delete_note,
+            search_notes,
+            export_backup,
+            import_backup,
+            apply_shortcuts,
+            account_status,
+            account_start_login,
+            account_cancel_login,
+            account_retry,
+            account_logout,
+            account_open_site,
+            account_dev_mode,
+            dependency_status,
+            install_dependency,
             list_system_fonts,
             extract_text_from_image,
-            ocr_quota,
             list_clipboard_history,
             clear_clipboard_history,
             remove_clipboard_entry,
-            compressor_quota,
-            consume_compressor_use,
-            transcribe_quota,
+            set_clipboard_pinned,
+            add_clipboard_snippet,
+            update_clipboard_snippet,
+            copy_clipboard_entry,
+            clipboard_image,
+            compress_pdf,
             get_whisper_model_path,
             set_whisper_model_path,
             transcribe_audio,
@@ -109,6 +146,9 @@ pub fn run() {
             search_files,
             ensure_file_index,
             file_index_status,
+            plan_status,
+            feature_quota,
+            consume_feature_use,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

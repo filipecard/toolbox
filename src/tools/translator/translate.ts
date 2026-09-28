@@ -17,7 +17,7 @@ interface MyMemoryResponse {
 /** Splits long text into <=maxLen chunks along sentence (then word)
  * boundaries, so a translation longer than MyMemory's 500-char-per-request
  * limit still works — each chunk is translated separately and rejoined. */
-function splitIntoChunks(text: string, maxLen: number): string[] {
+export function splitIntoChunks(text: string, maxLen: number): string[] {
   if (text.length <= maxLen) return [text];
 
   const chunks: string[] = [];

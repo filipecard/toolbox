@@ -9,6 +9,7 @@ import {
   removeReminder,
   type ReminderItem,
 } from "../../shared/tauri";
+import { formatLimit, planLabel, usePlanStatus } from "../../shared/plans";
 
 const TABS = [
   { id: "timer", label: "Timer" },
@@ -49,6 +50,7 @@ function defaultDateTimeInput(): string {
 
 export function RemindersWindow({ toolId }: { toolId: string }) {
   const [tab, setTab] = useState<TabId>("timer");
+  const plan = usePlanStatus();
 
   // --- Timer state ---
   const [totalMs, setTotalMs] = useState(PRESETS[0].minutes * 60 * 1000);
@@ -133,7 +135,12 @@ export function RemindersWindow({ toolId }: { toolId: string }) {
       setReminderError("Escolha uma data e hora no futuro.");
       return;
     }
-    await addReminder("reminder", trimmed, dueAt);
+    try {
+      await addReminder("reminder", trimmed, dueAt);
+    } catch (e) {
+      setReminderError(String(e));
+      return;
+    }
     setMessage("");
     setDateTime(defaultDateTimeInput());
   };
@@ -230,6 +237,23 @@ export function RemindersWindow({ toolId }: { toolId: string }) {
               </button>
             </div>
             {reminderError && <p className="ocr-error">{reminderError}</p>}
+            {plan && (
+              <p className="settings-hint">
+                {plan.limits.remindersActive === null
+                  ? `Plano ${planLabel(plan, "reminders")}: lembretes ilimitados`
+                  : reminders.length > plan.limits.remindersActive
+                    ? // Scheduled under a bigger plan: kept (deleting them would lose
+                      // the user's reminders), but no new ones until below the cap.
+                      `Plano ${planLabel(plan, "reminders")}: limite de ${formatLimit(
+                        plan.limits.remindersActive,
+                      )} lembretes. Os já agendados continuam, mas novos só depois que ${
+                        reminders.length - plan.limits.remindersActive + 1
+                      } dispararem ou forem removidos.`
+                    : `Plano ${planLabel(plan, "reminders")}: ${reminders.length}/${formatLimit(
+                        plan.limits.remindersActive,
+                      )} lembretes agendados`}
+              </p>
+            )}
 
             <div className="rem-list">
               {reminders.length === 0 && (

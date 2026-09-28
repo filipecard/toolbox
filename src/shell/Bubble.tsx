@@ -8,20 +8,16 @@ import {
   DEFAULT_BUBBLE_SIZE,
   getSettings,
   onSettingsChanged,
+  type AppSettings,
 } from "../shared/settingsStore";
-import { LAUNCHER_ICON_SRC } from "./toolCatalog";
+import { LAUNCHER_ICON_SRC, TOOL_CATALOG } from "./toolCatalog";
 import { SvgIcon } from "./ToolIcon";
 
-const BUBBLE_COLOR: Record<string, string> = {
-  launcher: DEFAULT_BUBBLE_COLOR,
-  calculator: "#e5484d",
-  notes: "#f5d90a",
-};
-
-const BUBBLE_ICON: Record<string, string> = {
-  calculator: "🧮",
-  notes: "📝",
-};
+/** Legacy per-tool bubbles (only the launcher is still created) just
+ * borrow their tool's catalog color and emoji. */
+function legacyBubble(toolId: string) {
+  return TOOL_CATALOG.find((t) => t.toolId === toolId);
+}
 
 const DRAG_THRESHOLD = 4;
 
@@ -30,7 +26,9 @@ export function Bubble({ toolId }: { toolId: string }) {
   const downPos = useRef<{ x: number; y: number } | null>(null);
   const dragging = useRef(false);
   const [size, setSize] = useState(DEFAULT_BUBBLE_SIZE);
-  const [color, setColor] = useState(BUBBLE_COLOR[toolId] ?? "#888");
+  const [color, setColor] = useState(
+    toolId === "launcher" ? DEFAULT_BUBBLE_COLOR : (legacyBubble(toolId)?.color ?? "#888"),
+  );
   const [opacity, setOpacity] = useState(DEFAULT_BUBBLE_OPACITY);
 
   // Only the launcher bubble is user-customizable (it's the only one that's
@@ -38,13 +36,12 @@ export function Bubble({ toolId }: { toolId: string }) {
   // bubble ids that aren't created anymore, kept only as a fallback).
   useEffect(() => {
     if (toolId !== "launcher") return;
-    const apply = () =>
-      void getSettings().then((s) => {
-        setSize(s.bubbleSize);
-        setColor(s.bubbleColor);
-        setOpacity(s.bubbleOpacity);
-      });
-    apply();
+    const apply = (s: AppSettings) => {
+      setSize(s.bubbleSize);
+      setColor(s.bubbleColor);
+      setOpacity(s.bubbleOpacity);
+    };
+    void getSettings().then(apply);
     let unlisten: (() => void) | undefined;
     void onSettingsChanged(apply).then((fn) => {
       unlisten = fn;
@@ -116,7 +113,7 @@ export function Bubble({ toolId }: { toolId: string }) {
       title="ToolBox"
     >
       <span className="bubble-icon">
-        {toolId === "launcher" ? <SvgIcon src={LAUNCHER_ICON_SRC} mono /> : (BUBBLE_ICON[toolId] ?? "•")}
+        {toolId === "launcher" ? <SvgIcon src={LAUNCHER_ICON_SRC} mono /> : (legacyBubble(toolId)?.icon ?? "•")}
       </span>
     </div>
   );

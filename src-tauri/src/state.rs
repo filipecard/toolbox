@@ -1,7 +1,10 @@
+use crate::account::AccountState;
 use crate::commands::clipboard::ClipboardEntry;
 use crate::commands::file_search::FileIndexStore;
+use crate::commands::reminders::ReminderStore;
 use crate::window_registry::WindowRegistry;
 use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
@@ -26,6 +29,10 @@ pub struct AppState {
     /// (offset) corner — which is a position the bubble was never actually
     /// at, and reads as a teleport instead of "the bubble followed the bar".
     pub quick_menu_anchor: Mutex<Option<(f64, f64, f64, f64)>>,
+    /// Until this instant, the quick menu losing focus means a window it
+    /// just opened took it — so it takes focus back instead of closing.
+    /// See `open_from_quick_menu`.
+    pub quick_menu_keep_open_until: Mutex<Option<std::time::Instant>>,
     /// In-memory mirror of the clipboard history persisted to store.json —
     /// kept here (not just read from disk per-call) so the background
     /// watcher thread and the `list_clipboard_history` command share one
@@ -34,4 +41,13 @@ pub struct AppState {
     /// In-memory index behind the file-search tool — an `Arc` so the
     /// background indexing thread can outlive the command that started it.
     pub file_index: Arc<FileIndexStore>,
+    pub reminders: ReminderStore,
+    /// Per-window counter bumped on every hide/show — a delayed "destroy
+    /// if still hidden" (see windows.rs's `schedule_idle_destroy`) only runs
+    /// if nothing touched the window since it was scheduled.
+    pub hide_gen: Mutex<HashMap<String, u64>>,
+    /// Registered global shortcut id → action (toolId, "notes",
+    /// "quick-menu"). See shortcuts.rs.
+    pub shortcut_actions: Mutex<HashMap<u32, String>>,
+    pub account: AccountState,
 }

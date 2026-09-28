@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TitleBar } from "../../shell/TitleBar";
-import { collapseTool } from "../../shared/tauri";
+import { collapseTool, consumeFeatureUse } from "../../shared/tauri";
+import { formatQuota, isQuotaExceeded, useQuota } from "../../shared/plans";
 import {
   buildHarmonies,
   hexToRgb,
@@ -16,14 +17,13 @@ import {
   type Rgb,
 } from "./colorMath";
 
-/** The eyedropper itself, manual hex/rgb/hsl entry and the recent-colors
- * strip are all free. Only the generated harmony palettes (complementary,
- * analogous, triadic...) are a paid feature. There is no licensing backend
- * yet (see the monetization plan), so — same placeholder approach as the
- * OCR tool's local quota — this just hardcodes the locked state for now,
- * to be swapped for a real per-service entitlement check once the online
- * account/licensing backend exists. */
-const HARMONIES_UNLOCKED = true;
+/* The eyedropper itself, manual hex/rgb/hsl entry and the recent-colors
+ * strip are all free. The generated harmony palettes (complementary,
+ * analogous, triadic...) are the paid feature: each "Gerar paletas" click
+ * consumes one of the plan's daily uses (see plans.rs). The palettes stay
+ * pinned to the color they were generated from (so clicking one of their
+ * swatches doesn't make them vanish); generating for another color is a
+ * new use. */
 
 /** Minimal ambient type for the EyeDropper Web API (Chromium/WebView2),
  * which isn't part of lib.dom.d.ts yet. */
@@ -154,7 +154,20 @@ export function ColorPickerWindow({ toolId }: { toolId: string }) {
 
   const rgbText = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
   const hslText = `hsl(${hsl.h}, ${hsl.s}%, ${hsl.l}%)`;
-  const harmonies = buildHarmonies(hsl);
+  const [harmonyQuota, setHarmonyQuota] = useQuota("harmoniesDaily");
+  const [harmonyBase, setHarmonyBase] = useState<{ hex: string; hsl: Hsl } | null>(null);
+  const [harmonyError, setHarmonyError] = useState<string | null>(null);
+  const harmonies = harmonyBase ? buildHarmonies(harmonyBase.hsl) : null;
+
+  const generateHarmonies = async () => {
+    setHarmonyError(null);
+    try {
+      setHarmonyQuota(await consumeFeatureUse("harmoniesDaily"));
+      setHarmonyBase({ hex, hsl });
+    } catch (e) {
+      setHarmonyError(String(e));
+    }
+  };
 
   return (
     <div className="panel color-picker">
@@ -290,7 +303,19 @@ export function ColorPickerWindow({ toolId }: { toolId: string }) {
 
         <div className="cp-harmonies">
           <span className="cp-section-label">Paletas harmônicas</span>
-          {HARMONIES_UNLOCKED ? (
+          {harmonyBase && harmonyBase.hex !== hex && (
+            <div className="cp-harmony-row">
+              <span className="settings-hint">Paletas da cor {harmonyBase.hex}</span>
+              <button
+                className="var-add-btn"
+                onClick={() => void generateHarmonies()}
+                disabled={isQuotaExceeded(harmonyQuota)}
+              >
+                Gerar para a cor atual
+              </button>
+            </div>
+          )}
+          {harmonies ? (
             harmonies.map((harmony) => (
               <div key={harmony.label} className="cp-harmony-row">
                 <span className="cp-harmony-label">{harmony.label}</span>
@@ -309,13 +334,21 @@ export function ColorPickerWindow({ toolId }: { toolId: string }) {
             ))
           ) : (
             <div className="cp-locked">
-              <span className="cp-locked-icon">🔒</span>
               <p className="settings-hint cp-locked-text">
                 Combinações de cores prontas (complementar, análoga, triádica, split-complementar,
-                tetrádica) a partir da cor atual. Recurso pago — disponível com upgrade de plano.
+                tetrádica) a partir da cor atual.
               </p>
+              <button
+                className="var-add-btn"
+                onClick={() => void generateHarmonies()}
+                disabled={isQuotaExceeded(harmonyQuota)}
+              >
+                Gerar paletas
+              </button>
             </div>
           )}
+          {harmonyError && <p className="ocr-error">{harmonyError}</p>}
+          {harmonyQuota && <span className="ocr-quota">{formatQuota(harmonyQuota)}</span>}
         </div>
       </div>
     </div>

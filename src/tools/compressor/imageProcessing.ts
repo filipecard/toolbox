@@ -68,7 +68,11 @@ export function triggerDownload(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-export function swapExtension(filename: string, format: ImageFormat): string {
+export function isPdf(file: File): boolean {
+  return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+}
+
+export function swapExtension(filename: string, format: ImageFormat | "pdf"): string {
   const ext = format === "jpeg" ? "jpg" : format;
   const dot = filename.lastIndexOf(".");
   const base = dot > 0 ? filename.slice(0, dot) : filename;

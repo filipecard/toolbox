@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { expandTool, openNotesBar } from "../shared/tauri";
+import { openFromQuickMenu } from "../shared/tauri";
 import { getSettings, onSettingsChanged, type AppSettings } from "../shared/settingsStore";
 import { SETTINGS_ICON_SRC, TOOL_CATALOG } from "./toolCatalog";
 import { SvgIcon, ToolIcon } from "./ToolIcon";
@@ -47,7 +47,7 @@ export function QuickMenu() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void onSettingsChanged(refresh).then((fn) => {
+    void onSettingsChanged(setSettings).then((fn) => {
       unlisten = fn;
     });
     return () => unlisten?.();
@@ -73,12 +73,10 @@ export function QuickMenu() {
     return () => unlisten?.();
   }, []);
 
+  // The bar stays open after picking something; it closes on a click
+  // outside it (see open_from_quick_menu).
   const handleSelect = (toolId: string) => {
-    if (toolId === "notes") {
-      void openNotesBar();
-    } else {
-      void expandTool(toolId);
-    }
+    void openFromQuickMenu(toolId);
   };
 
   const items = (settings?.quickMenuItems ?? [])
@@ -119,7 +117,7 @@ export function QuickMenu() {
           className="quick-menu-item quick-menu-item-settings"
           style={{ animationDelay: popDelay(items.length) }}
           title="Configurações"
-          onClick={() => void expandTool("settings")}
+          onClick={() => handleSelect("settings")}
         >
           <SvgIcon src={SETTINGS_ICON_SRC} mono />
         </button>

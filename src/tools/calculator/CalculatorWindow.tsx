@@ -1,16 +1,13 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TitleBar } from "../../shell/TitleBar";
 import { collapseTool } from "../../shared/tauri";
+import { formatLimit, planLabel, usePlanStatus } from "../../shared/plans";
 import { buildVariableScope, evaluateExpression, type Variable } from "./engine";
 import { Keypad, type KeyAction } from "./Keypad";
 import { VariablesPanel } from "./VariablesPanel";
-
-interface HistoryEntry {
-  expression: string;
-  result: string;
-}
+import { loadCalcState, saveCalcState, type HistoryEntry } from "./calcStorage";
 
 export function CalculatorWindow({ toolId }: { toolId: string }) {
   const [expression, setExpression] = useState("");
@@ -19,11 +16,43 @@ export function CalculatorWindow({ toolId }: { toolId: string }) {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [variables, setVariables] = useState<Variable[]>([]);
   const nextVarNum = useRef(1);
+  // Nothing is saved until the stored state has been loaded, or the empty
+  // initial state would overwrite it.
+  const [loaded, setLoaded] = useState(false);
+  const plan = usePlanStatus();
+  const varLimit = plan ? plan.limits.calcVariables : 0;
+  const atVarLimit = varLimit !== null && variables.length >= varLimit;
 
   const { scope, results } = useMemo(
     () => buildVariableScope(variables, memory),
     [variables, memory],
   );
+
+  useEffect(() => {
+    void loadCalcState()
+      .then((saved) => {
+        if (!saved) return;
+        const vars = saved.variables ?? [];
+        setVariables(vars);
+        setHistory(saved.history ?? []);
+        setMemory(saved.memory ?? 0);
+        setExpression(saved.expression ?? "");
+        // Keeps auto-generated names (variavel_01...) from colliding with
+        // restored ones.
+        nextVarNum.current = vars.length + 1;
+      })
+      .finally(() => setLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    if (loaded) saveCalcState({ expression, memory, history, variables });
+  }, [loaded, expression, memory, history, variables]);
+
+  // The preview depends on variables/memory too, which may arrive after
+  // the expression when state is restored.
+  useEffect(() => {
+    setPreview(expression ? evaluateExpression(expression, scope) : "");
+  }, [scope]);
 
   const updateExpression = (next: string) => {
     setExpression(next);
@@ -63,6 +92,7 @@ export function CalculatorWindow({ toolId }: { toolId: string }) {
   };
 
   const handleAddVariable = (rawName: string, rawExpr: string) => {
+    if (atVarLimit) return;
     const trimmedName = rawName.trim();
     const isValidName = /^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmedName);
     const isTaken = isValidName && variables.some((v) => v.name === trimmedName);
@@ -133,6 +163,14 @@ export function CalculatorWindow({ toolId }: { toolId: string }) {
           onRename={handleRenameVariable}
           onReorder={handleReorderVariables}
           onInsertName={handleInsert}
+          atLimit={atVarLimit}
+          limitHint={
+            plan
+              ? `Plano ${planLabel(plan, "calculator")}: ${variables.length}/${formatLimit(varLimit)} variáveis${
+                  atVarLimit ? " — faça upgrade para adicionar mais" : ""
+                }`
+              : ""
+          }
         />
         <div className="calc-history">
           {history.map((entry, i) => (

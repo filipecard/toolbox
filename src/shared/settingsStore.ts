@@ -58,7 +58,17 @@ export interface AppSettings {
   /** One user-saved theme slot (full theme: colors, opacities, font and
    * sizes), re-applied from its tile in Settings. Unset until first saved. */
   customTheme?: AppTheme;
+  /** Global keyboard shortcuts: action (toolId, "notes", "quick-menu") →
+   * combination in global-hotkey's format, e.g. "Ctrl+Alt+KeyV". Registered
+   * by the Rust side (shortcuts.rs). */
+  shortcuts: Record<string, string>;
 }
+
+/** Keep in sync with DEFAULT_SHORTCUTS in shortcuts.rs. Only the quick
+ * menu gets a default: Ctrl+Alt+<letter> is AltGr+<letter> on ABNT2
+ * keyboards (AltGr+C types ₢, AltGr+Q types /...), so letter defaults would
+ * steal characters people type — those are left for the user to pick. */
+export const DEFAULT_SHORTCUTS: Record<string, string> = { "quick-menu": "Ctrl+Alt+Space" };
 
 export const DEFAULT_BUBBLE_SIZE = 44;
 export const DEFAULT_BUBBLE_COLOR = "#008f32";
@@ -159,6 +169,7 @@ function defaultSettings(): AppSettings {
     bubbleColor: DEFAULT_BUBBLE_COLOR,
     bubbleOpacity: DEFAULT_BUBBLE_OPACITY,
     theme: DEFAULT_THEME,
+    shortcuts: DEFAULT_SHORTCUTS,
   };
 }
 
@@ -179,6 +190,7 @@ function normalize(stored: Partial<AppSettings> | null): AppSettings {
     bubbleOpacity: stored.bubbleOpacity ?? base.bubbleOpacity,
     theme: { ...base.theme, ...stored.theme },
     customTheme: stored.customTheme ? { ...base.theme, ...stored.customTheme } : undefined,
+    shortcuts: stored.shortcuts ?? base.shortcuts,
   };
 }
 
@@ -219,13 +231,41 @@ export async function getSettings(): Promise<AppSettings> {
   return normalized;
 }
 
+/** Dragging a slider or color picker calls saveSettings on every tiny
+ * change; only the last one within this window is written to disk. */
+const SAVE_DEBOUNCE_MS = 300;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Applies immediately everywhere (the plugin's in-memory store, which the
+ * Rust side also reads, plus every open window via the event) and writes
+ * store.json to disk shortly after. The plugin also saves its stores on
+ * app exit, so a change made right before quitting isn't lost. */
 export async function saveSettings(settings: AppSettings): Promise<void> {
   const store = await getStore();
   await store.set(SETTINGS_KEY, settings);
-  await store.save();
-  await emit(SETTINGS_CHANGED_EVENT, null);
+  await emit(SETTINGS_CHANGED_EVENT, settings);
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void store.save();
+  }, SAVE_DEBOUNCE_MS);
 }
 
-export function onSettingsChanged(handler: () => void): Promise<() => void> {
-  return listen(SETTINGS_CHANGED_EVENT, handler);
+/** Only changes made outside the frontend's own saveSettings (a backup
+ * import in Rust emits the event with no payload). The Settings window
+ * uses this instead of onSettingsChanged: echoes of its own saves arriving
+ * late could otherwise overwrite what's being typed. */
+export function onSettingsReplaced(handler: (settings: AppSettings) => void): Promise<() => void> {
+  return listen<AppSettings | null>(SETTINGS_CHANGED_EVENT, (e) => {
+    if (!e.payload) void getSettings().then(handler);
+  });
+}
+
+/** The event carries the new settings, so listeners don't each re-read
+ * the store on every change. */
+export function onSettingsChanged(handler: (settings: AppSettings) => void): Promise<() => void> {
+  return listen<AppSettings | null>(SETTINGS_CHANGED_EVENT, (e) => {
+    if (e.payload) handler(e.payload);
+    else void getSettings().then(handler);
+  });
 }

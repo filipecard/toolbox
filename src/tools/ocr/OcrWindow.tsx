@@ -1,24 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TitleBar } from "../../shell/TitleBar";
-import { collapseTool, extractTextFromImage, ocrQuota, type OcrQuota } from "../../shared/tauri";
+import { collapseTool, extractTextFromImage } from "../../shared/tauri";
+import { formatQuota, isQuotaExceeded, useQuota } from "../../shared/plans";
 import { readFileAsBytes } from "../../shared/fileBytes";
+import { DependencyInstaller } from "../../shared/DependencyInstaller";
 
 export function OcrWindow({ toolId }: { toolId: string }) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
-  const [fileBytes, setFileBytes] = useState<number[] | null>(null);
+  const [fileBytes, setFileBytes] = useState<Uint8Array | null>(null);
   const [text, setText] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [quota, setQuota] = useState<OcrQuota | null>(null);
+  const [quota, setQuota] = useQuota("ocrDaily");
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    void ocrQuota().then(setQuota);
-  }, []);
 
   const handleFile = useCallback(async (file: File) => {
     setError(null);
@@ -41,7 +39,7 @@ export function OcrWindow({ toolId }: { toolId: string }) {
       const result = await extractTextFromImage(fileBytes, fileName);
       setText(result.text);
       setWarning(result.warning ?? null);
-      setQuota({ used: result.used, limit: result.limit });
+      setQuota(result.quota);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -49,7 +47,7 @@ export function OcrWindow({ toolId }: { toolId: string }) {
     }
   };
 
-  const quotaExceeded = quota ? quota.used >= quota.limit : false;
+  const quotaExceeded = isQuotaExceeded(quota);
 
   return (
     <div className="panel ocr">
@@ -103,13 +101,22 @@ export function OcrWindow({ toolId }: { toolId: string }) {
             {busy ? "Extraindo..." : "Extrair texto"}
           </button>
           {quota && (
-            <span className="ocr-quota">
-              Grátis: {quota.used}/{quota.limit} hoje
-            </span>
+            <span className="ocr-quota">{formatQuota(quota)}</span>
           )}
         </div>
 
         {error && <p className="ocr-error">{error}</p>}
+        {error?.includes("Baixar Tesseract") && (
+          <DependencyInstaller
+            id="tesseract"
+            label="Tesseract"
+            approxMb={60}
+            onInstalled={() => {
+              setError(null);
+              if (fileBytes) void handleExtract();
+            }}
+          />
+        )}
         {warning && <p className="settings-hint">{warning}</p>}
 
         <textarea

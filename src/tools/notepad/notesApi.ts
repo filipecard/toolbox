@@ -8,5 +8,6 @@ export {
   openNote,
   openNotesBar,
   collapseNotesBar,
+  searchNotes,
 } from "../../shared/tauri";
 export type { NoteMeta } from "../../shared/tauri";
