@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { applyShortcuts } from "../shared/tauri";
-import { DEFAULT_SHORTCUTS, type AppSettings } from "../shared/settingsStore";
+import { DEFAULT_SHORTCUTS, isInstalled, type AppSettings } from "../shared/settingsStore";
 import { TOOL_CATALOG } from "./toolCatalog";
 import { MODIFIER_CODES, comboFromEvent, formatCombo } from "./shortcutFormat";
 
@@ -104,7 +104,11 @@ export function ShortcutsSection({
         novo com a ferramenta em foco minimiza ela.
       </p>
       <div className="shortcut-list">
-        {ACTIONS.map((action) => {
+        {ACTIONS.filter((action) => {
+          // Tools removed in "Ferramentas" can't have a shortcut.
+          const item = settings.quickMenuItems.find((i) => i.toolId === action.id);
+          return !item || isInstalled(item);
+        }).map((action) => {
           const combo = settings.shortcuts[action.id];
           const isRecording = recording === action.id;
           return (

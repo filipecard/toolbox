@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TitleBar } from "../../shell/TitleBar";
 import { collapseTool, extractTextFromImage } from "../../shared/tauri";
-import { formatQuota, isQuotaExceeded, useQuota } from "../../shared/plans";
+import { formatQuota, useQuota } from "../../shared/plans";
 import { readFileAsBytes } from "../../shared/fileBytes";
 import { DependencyInstaller } from "../../shared/DependencyInstaller";
 
@@ -47,7 +47,6 @@ export function OcrWindow({ toolId }: { toolId: string }) {
     }
   };
 
-  const quotaExceeded = isQuotaExceeded(quota);
 
   return (
     <div className="panel ocr">
@@ -95,7 +94,7 @@ export function OcrWindow({ toolId }: { toolId: string }) {
         <div className="ocr-actions">
           <button
             className="var-add-btn"
-            disabled={!fileBytes || busy || quotaExceeded}
+            disabled={!fileBytes || busy}
             onClick={() => void handleExtract()}
           >
             {busy ? "Extraindo..." : "Extrair texto"}

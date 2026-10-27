@@ -22,6 +22,10 @@ const PUBLIC_KEY_B64: &str = match option_env!("TOOLBOX_ENTITLEMENT_PUBLIC_KEY")
 pub struct EntitlementClaims {
     pub sub: String,
     pub sid: String,
+    /// Hash of the computer the token was issued to (see account::machine_hash).
+    /// Absent only for sessions opened before machine ids existed.
+    #[serde(default)]
+    pub mid: Option<String>,
     pub email: String,
     #[serde(default)]
     pub diamond: bool,
@@ -37,6 +41,8 @@ pub enum VerifyError {
     Malformed,
     BadSignature,
     WrongUser,
+    /// Issued to another computer (the plan file was copied).
+    WrongMachine,
     Expired,
 }
 
@@ -46,16 +52,22 @@ fn public_key() -> Result<VerifyingKey, VerifyError> {
     VerifyingKey::from_bytes(&bytes).map_err(|_| VerifyError::Malformed)
 }
 
-/// Checks signature, owner and expiry. `now_s` is the current time in
-/// seconds (after the clock-rollback check done by the caller).
-pub fn verify(token: &str, expected_user: &str, now_s: u64) -> Result<EntitlementClaims, VerifyError> {
-    verify_with_key(&public_key()?, token, expected_user, now_s)
+/// Checks signature, owner, computer and expiry. `now_s` is the current
+/// time in seconds (after the clock-rollback check done by the caller).
+pub fn verify(
+    token: &str,
+    expected_user: &str,
+    machine: Option<&str>,
+    now_s: u64,
+) -> Result<EntitlementClaims, VerifyError> {
+    verify_with_key(&public_key()?, token, expected_user, machine, now_s)
 }
 
 fn verify_with_key(
     key: &VerifyingKey,
     token: &str,
     expected_user: &str,
+    machine: Option<&str>,
     now_s: u64,
 ) -> Result<EntitlementClaims, VerifyError> {
     let mut parts = token.split('.');
@@ -85,6 +97,11 @@ fn verify_with_key(
     if claims.sub != expected_user {
         return Err(VerifyError::WrongUser);
     }
+    if let (Some(mid), Some(machine)) = (claims.mid.as_deref(), machine) {
+        if mid != machine {
+            return Err(VerifyError::WrongMachine);
+        }
+    }
     if claims.exp <= now_s {
         return Err(VerifyError::Expired);
     }
@@ -112,7 +129,7 @@ mod tests {
 
     #[test]
     fn accepts_a_valid_token() {
-        let claims = verify_with_key(&key().verifying_key(), &sign(&key(), CLAIMS), "u1", 1000).unwrap();
+        let claims = verify_with_key(&key().verifying_key(), &sign(&key(), CLAIMS), "u1", None, 1000).unwrap();
         assert_eq!(claims.tools.get("ocr"), Some(&Tier::Silver));
     }
 
@@ -125,13 +142,22 @@ mod tests {
         let parts: Vec<&str> = token.split('.').collect();
         let forged_payload = URL_SAFE_NO_PAD.encode(CLAIMS.replace("silver", "gold"));
         let forged = format!("{}.{}.{}", parts[0], forged_payload, parts[2]);
-        assert_eq!(verify_with_key(&vk, &forged, "u1", 1000), Err(VerifyError::BadSignature));
+        assert_eq!(verify_with_key(&vk, &forged, "u1", None, 1000), Err(VerifyError::BadSignature));
 
         let other = SigningKey::from_bytes(&[9u8; 32]);
-        assert_eq!(verify_with_key(&vk, &sign(&other, CLAIMS), "u1", 1000), Err(VerifyError::BadSignature));
-        assert_eq!(verify_with_key(&vk, &token, "u2", 1000), Err(VerifyError::WrongUser));
-        assert_eq!(verify_with_key(&vk, &token, "u1", 2000), Err(VerifyError::Expired));
-        assert_eq!(verify_with_key(&vk, "a.b", "u1", 1000), Err(VerifyError::Malformed));
+        assert_eq!(verify_with_key(&vk, &sign(&other, CLAIMS), "u1", None, 1000), Err(VerifyError::BadSignature));
+        assert_eq!(verify_with_key(&vk, &token, "u2", None, 1000), Err(VerifyError::WrongUser));
+        assert_eq!(verify_with_key(&vk, &token, "u1", None, 2000), Err(VerifyError::Expired));
+        assert_eq!(verify_with_key(&vk, "a.b", "u1", None, 1000), Err(VerifyError::Malformed));
+    }
+
+    #[test]
+    fn rejects_a_token_issued_to_another_computer() {
+        let claims = CLAIMS.replace(r#""sid":"s1","#, r#""sid":"s1","mid":"machine-a","#);
+        let token = sign(&key(), &claims);
+        let vk = key().verifying_key();
+        assert!(verify_with_key(&vk, &token, "u1", Some("machine-a"), 1000).is_ok());
+        assert_eq!(verify_with_key(&vk, &token, "u1", Some("machine-b"), 1000), Err(VerifyError::WrongMachine));
     }
 
     #[test]

@@ -11,7 +11,7 @@ import {
   transcribeAudio,
   whisperSetupStatus,
 } from "../../shared/tauri";
-import { formatLimit, formatQuota, isQuotaExceeded, usePlanStatus, useQuota } from "../../shared/plans";
+import { formatLimit, formatQuota, usePlanStatus, useQuota } from "../../shared/plans";
 import { toWavBytes } from "./audioConvert";
 import { WHISPER_LANGUAGES } from "./whisperLanguages";
 
@@ -102,7 +102,6 @@ export function TranscribeWindow({ toolId }: { toolId: string }) {
     }
   };
 
-  const quotaExceeded = isQuotaExceeded(quota);
   const busy = stage !== null;
   const settingUp = setupProgress !== null;
 
@@ -199,7 +198,7 @@ export function TranscribeWindow({ toolId }: { toolId: string }) {
             <div className="ocr-actions">
               <button
                 className="var-add-btn"
-                disabled={!file || busy || quotaExceeded}
+                disabled={!file || busy}
                 onClick={() => void handleTranscribe()}
               >
                 {stage === "converting"

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TitleBar } from "../../shell/TitleBar";
 import { collapseTool, consumeFeatureUse } from "../../shared/tauri";
-import { formatQuota, isQuotaExceeded, useQuota } from "../../shared/plans";
+import { formatQuota, useQuota } from "../../shared/plans";
 import {
   buildHarmonies,
   hexToRgb,
@@ -309,7 +309,6 @@ export function ColorPickerWindow({ toolId }: { toolId: string }) {
               <button
                 className="var-add-btn"
                 onClick={() => void generateHarmonies()}
-                disabled={isQuotaExceeded(harmonyQuota)}
               >
                 Gerar para a cor atual
               </button>
@@ -341,7 +340,6 @@ export function ColorPickerWindow({ toolId }: { toolId: string }) {
               <button
                 className="var-add-btn"
                 onClick={() => void generateHarmonies()}
-                disabled={isQuotaExceeded(harmonyQuota)}
               >
                 Gerar paletas
               </button>

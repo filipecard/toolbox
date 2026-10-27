@@ -332,6 +332,10 @@ pub fn start_watcher(app: AppHandle) {
                 continue;
             }
             last_seq = seq;
+            // Removed in Settings → Ferramentas: stop keeping history.
+            if !crate::commands::windows::tool_installed(&app, "clipboard") {
+                continue;
+            }
             if let Some(captured) = capture(&mut clipboard) {
                 record(&app, captured);
             }

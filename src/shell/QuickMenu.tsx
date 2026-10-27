@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openFromQuickMenu } from "../shared/tauri";
-import { getSettings, onSettingsChanged, type AppSettings } from "../shared/settingsStore";
+import { getSettings, isInstalled, onSettingsChanged, type AppSettings } from "../shared/settingsStore";
 import { SETTINGS_ICON_SRC, TOOL_CATALOG } from "./toolCatalog";
 import { SvgIcon, ToolIcon } from "./ToolIcon";
 
@@ -80,7 +80,7 @@ export function QuickMenu() {
   };
 
   const items = (settings?.quickMenuItems ?? [])
-    .filter((item) => item.enabled)
+    .filter((item) => item.enabled && isInstalled(item))
     .map((item) => ({
       ...item,
       catalog: TOOL_CATALOG.find((t) => t.toolId === item.toolId),

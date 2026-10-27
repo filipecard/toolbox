@@ -1,6 +1,7 @@
 mod account;
 mod backup;
 mod commands;
+mod integrity;
 mod plans;
 mod state;
 mod shortcuts;
@@ -22,6 +23,8 @@ use commands::notes::{
 };
 use commands::ocr::extract_text_from_image;
 use commands::reminders::{add_reminder, list_reminders, remove_reminder};
+use commands::setup::{autostart_enabled, set_autostart, take_installer_setup};
+use commands::tool_install::remove_tool_components;
 use commands::transcribe::{get_whisper_model_path, set_whisper_model_path, transcribe_audio};
 use commands::whisper_setup::{setup_whisper, whisper_setup_status};
 use commands::windows::{
@@ -121,8 +124,12 @@ pub fn run() {
             account_logout,
             account_open_site,
             account_dev_mode,
+            take_installer_setup,
+            autostart_enabled,
+            set_autostart,
             dependency_status,
             install_dependency,
+            remove_tool_components,
             list_system_fonts,
             extract_text_from_image,
             list_clipboard_history,

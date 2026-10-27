@@ -12,6 +12,7 @@ import {
   DEFAULT_BUBBLE_SIZE,
   DEFAULT_THEME,
   THEME_PRESETS,
+  isInstalled,
   withVisualDefaults,
   type AppSettings,
   type AppTheme,
@@ -21,6 +22,8 @@ import { SvgIcon, ToolIcon } from "./ToolIcon";
 import { ShortcutsSection } from "./ShortcutsSection";
 import { BackupSection } from "./BackupSection";
 import { AccountSection } from "./AccountSection";
+import { StartupSection } from "./StartupSection";
+import { ToolsSection } from "./ToolsSection";
 
 const THEME_FIELDS: {
   key: "background" | "text" | "header" | "button" | "input" | "accent";
@@ -132,12 +135,14 @@ export function SettingsWindow() {
       <div className="settings-body">
         <AccountSection />
 
+        <ToolsSection settings={settings} update={update} />
+
         <section className="settings-section">
           <h3 className="settings-heading">Itens do menu rápido</h3>
           <div className="settings-item-list">
             {settings.quickMenuItems.map((item, index) => {
               const catalog = TOOL_CATALOG.find((t) => t.toolId === item.toolId);
-              if (!catalog) return null;
+              if (!catalog || !isInstalled(item)) return null;
               return (
                 <div
                   key={item.toolId}
@@ -396,6 +401,8 @@ export function SettingsWindow() {
             Depois é só clicar em "★ Meu tema" para voltar a ele.
           </p>
         </section>
+
+        <StartupSection />
 
         <ShortcutsSection settings={settings} update={update} />
 

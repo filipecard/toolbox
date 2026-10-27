@@ -241,7 +241,7 @@ export function CompressorWindow({ toolId }: { toolId: string }) {
         <div className="comp-actions">
           <button
             className="var-add-btn"
-            disabled={pendingCount === 0 || busy || quotaExceeded}
+            disabled={pendingCount === 0 || busy}
             onClick={() => void handleCompressAll()}
           >
             {busy ? "Processando..." : `Comprimir${pendingCount > 0 ? ` (${pendingCount})` : ""}`}

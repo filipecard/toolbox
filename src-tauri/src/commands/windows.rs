@@ -129,6 +129,25 @@ fn get_ui_zoom_pref(app: &AppHandle) -> f64 {
         .unwrap_or(1.0)
 }
 
+/// Tools removed in Settings → Ferramentas (quick-menu item with
+/// `installed: false`) can't be opened by any route — quick menu, shortcut
+/// or a stale window. Missing flag (settings from before this existed) or
+/// ids outside the catalog ("settings") count as installed.
+pub fn tool_installed(app: &AppHandle, tool_id: &str) -> bool {
+    get_settings_value(app)
+        .and_then(|v| v.get("quickMenuItems").cloned())
+        .and_then(|v| v.as_array().cloned())
+        .and_then(|items| {
+            items
+                .into_iter()
+                .find(|i| i.get("toolId").and_then(|t| t.as_str()) == Some(tool_id))
+        })
+        .and_then(|i| i.get("installed").and_then(|v| v.as_bool()))
+        .unwrap_or(true)
+}
+
+const NOT_INSTALLED: &str = "Essa ferramenta não está instalada. Instale em Configurações → Ferramentas.";
+
 /// Counts how many icons the quick-menu bar will actually render: enabled
 /// quick-menu items plus the always-present settings gear — mirrors
 /// QuickMenu.tsx's own item filtering so the window is sized to fit
@@ -141,6 +160,7 @@ fn quick_menu_item_count(app: &AppHandle) -> usize {
             items
                 .iter()
                 .filter(|i| i.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true))
+                .filter(|i| i.get("installed").and_then(|e| e.as_bool()).unwrap_or(true))
                 .count()
         })
         .unwrap_or(0);
@@ -768,6 +788,9 @@ pub async fn expand_tool(app: AppHandle, tool_id: String) -> Result<(), String> 
     if !app.state::<AppState>().account.is_active() {
         return Err(NOT_SIGNED_IN.into());
     }
+    if !tool_installed(&app, &tool_id) {
+        return Err(NOT_INSTALLED.into());
+    }
     let tool_label = format!("tool-{tool_id}");
     if let Some(win) = app.get_webview_window(&tool_label) {
         mark_shown(&app, &tool_label);
@@ -848,6 +871,9 @@ fn collapse_notes_bar_internal(app: &AppHandle) -> Result<(), String> {
 pub async fn open_notes_bar(app: AppHandle) -> Result<(), String> {
     if !app.state::<AppState>().account.is_active() {
         return Err(NOT_SIGNED_IN.into());
+    }
+    if !tool_installed(&app, "notes") {
+        return Err(NOT_INSTALLED.into());
     }
     let label = "notes-bar";
     if let Some(win) = app.get_webview_window(label) {

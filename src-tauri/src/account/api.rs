@@ -113,7 +113,7 @@ pub async fn get_raw(url: &str) -> Result<reqwest::Response, ApiError> {
     Ok(res)
 }
 
-// --- Response shapes (camelCase, see packages/shared/src/api.ts) ---
+// --- Response shapes (camelCase, see ToolBoxWEB/packages/shared/src/api.ts) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

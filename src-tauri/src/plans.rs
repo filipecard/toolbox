@@ -15,8 +15,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_store::StoreExt;
 
 use crate::state::AppState;
@@ -207,24 +209,117 @@ fn local_day_number(date: chrono::NaiveDate) -> u64 {
     date.signed_duration_since(epoch).num_days().max(0) as u64
 }
 
+// Anti-tamper: the day's counts live in three places and the largest wins —
+// plan.json, a mirror in the Windows Credential Manager, and the account on
+// the server (sync_usage). Deleting or editing the local file doesn't give
+// the day's allowance back.
+
+const KEYRING_SERVICE: &str = "com.filip.toolbox";
+const USAGE_MIRROR: &str = "usage-mirror";
+
+#[derive(Serialize, Deserialize, Default)]
+struct UsageMirror {
+    day: u64,
+    counts: HashMap<String, u32>,
+}
+
+fn mirror_entry() -> Option<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, USAGE_MIRROR).ok()
+}
+
+fn read_mirror() -> UsageMirror {
+    mirror_entry()
+        .and_then(|e| e.get_password().ok())
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
+}
+
+fn write_mirror(mirror: &UsageMirror) {
+    if let (Some(entry), Ok(json)) = (mirror_entry(), serde_json::to_string(mirror)) {
+        let _ = entry.set_password(&json);
+    }
+}
+
+/// Set when the server says the computer's date is off (clock moved to a
+/// "new day" to reset the limits): daily features pause until it's fixed.
+static CLOCK_SUSPECT: AtomicBool = AtomicBool::new(false);
+
 fn read_usage(app: &AppHandle, feature: Feature) -> DailyUsage {
     let today = current_day();
-    let key = format!("{USAGE_KEY_PREFIX}{}", feature.spec().id);
+    let id = feature.spec().id;
+    let key = format!("{USAGE_KEY_PREFIX}{id}");
     let stored = app
         .store(PLAN_STORE)
         .ok()
         .and_then(|store| store.get(&key))
-        .and_then(|v| serde_json::from_value::<DailyUsage>(v).ok());
-    match stored {
-        Some(usage) if usage.day == today => usage,
-        _ => DailyUsage { day: today, count: 0 },
-    }
+        .and_then(|v| serde_json::from_value::<DailyUsage>(v).ok())
+        .filter(|u| u.day == today)
+        .map_or(0, |u| u.count);
+    let mirror = read_mirror();
+    let mirrored = if mirror.day == today { mirror.counts.get(id).copied().unwrap_or(0) } else { 0 };
+    DailyUsage { day: today, count: stored.max(mirrored) }
 }
 
 fn write_usage(app: &AppHandle, feature: Feature, usage: DailyUsage) {
+    let id = feature.spec().id;
     if let Ok(store) = app.store(PLAN_STORE) {
-        store.set(format!("{USAGE_KEY_PREFIX}{}", feature.spec().id), serde_json::json!(usage));
+        store.set(format!("{USAGE_KEY_PREFIX}{id}"), serde_json::json!(usage));
         let _ = store.save();
+    }
+    let mut mirror = read_mirror();
+    if mirror.day != usage.day {
+        mirror = UsageMirror { day: usage.day, counts: HashMap::new() };
+    }
+    let slot = mirror.counts.entry(id.to_string()).or_insert(0);
+    *slot = (*slot).max(usage.count);
+    write_mirror(&mirror);
+}
+
+/// Today's count of every daily feature (what the server gets).
+fn usage_snapshot(app: &AppHandle) -> (u64, HashMap<String, u32>) {
+    let counts = Feature::ALL
+        .into_iter()
+        .filter(|f| f.spec().daily)
+        .map(|f| (f.spec().id.to_string(), read_usage(app, f).count))
+        .collect();
+    (current_day(), counts)
+}
+
+/// Reports today's counts and adopts the account's totals (larger wins).
+/// Offline or server trouble: keeps the local counts, nothing else changes.
+pub async fn sync_usage(app: &AppHandle, access_token: &str) {
+    #[derive(Serialize)]
+    struct Body {
+        day: u64,
+        counts: HashMap<String, u32>,
+    }
+    #[derive(Deserialize)]
+    struct Reply {
+        day: u64,
+        counts: HashMap<String, u32>,
+    }
+    let (day, counts) = usage_snapshot(app);
+    match crate::account::api::post::<_, Reply>("/me/usage", &Body { day, counts }, Some(access_token)).await {
+        Ok(reply) => {
+            CLOCK_SUSPECT.store(false, Ordering::Relaxed);
+            if reply.day != current_day() {
+                return;
+            }
+            let _guard = USAGE_LOCK.lock().unwrap();
+            for feature in Feature::ALL.into_iter().filter(|f| f.spec().daily) {
+                let server = reply.counts.get(feature.spec().id).copied().unwrap_or(0);
+                let local = read_usage(app, feature);
+                if server > local.count {
+                    write_usage(app, feature, DailyUsage { day: local.day, count: server });
+                }
+            }
+            let _ = app.emit(PLAN_CHANGED_EVENT, ());
+        }
+        Err(e) if e.code() == "bad_day" => {
+            CLOCK_SUSPECT.store(true, Ordering::Relaxed);
+            let _ = app.emit(PLAN_CHANGED_EVENT, ());
+        }
+        Err(_) => {}
     }
 }
 
@@ -249,12 +344,27 @@ pub fn daily_quota(app: &AppHandle, feature: Feature) -> Quota {
 /// Errors (without consuming anything) when today's allowance is used up.
 /// For work that can still fail after this check (OCR, transcription), call
 /// `consume_daily` only once it succeeded, so failures don't burn a use.
+/// A blocked use also shows a Windows notification, so trying again past
+/// the limit is never a silent no-op.
 pub fn check_daily(app: &AppHandle, feature: Feature) -> Result<(), String> {
     let quota = daily_quota(app, feature);
+    if quota.limit.is_some() && CLOCK_SUSPECT.load(Ordering::Relaxed) {
+        let message = "A data do computador está diferente da data real. Ajuste o relógio do Windows para continuar usando esta ferramenta.";
+        notify_blocked(app, "Relógio do computador incorreto", message);
+        return Err(message.into());
+    }
     match quota.limit {
-        Some(limit) if quota.used >= limit => Err(limit_message(app, feature)),
+        Some(limit) if quota.used >= limit => {
+            let message = limit_message(app, feature);
+            notify_blocked(app, "Limite diário atingido", &message);
+            Err(message)
+        }
         _ => Ok(()),
     }
+}
+
+fn notify_blocked(app: &AppHandle, title: &str, body: &str) {
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 /// Atomically checks and consumes one use.
@@ -267,6 +377,7 @@ pub fn consume_daily(app: &AppHandle, feature: Feature) -> Result<Quota, String>
         count: usage.count + 1,
     };
     write_usage(app, feature, next);
+    crate::account::report_usage_soon(app);
     Ok(daily_quota(app, feature))
 }
 

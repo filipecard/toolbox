@@ -34,3 +34,12 @@ pub fn set_binary_path(app: &AppHandle, path: &str) -> Result<(), String> {
     store.set(BINARY_PATH_KEY, serde_json::json!(path));
     store.save().map_err(|e| e.to_string())
 }
+
+/// Forgets both paths (the tool was removed and its files deleted).
+pub fn clear_paths(app: &AppHandle) {
+    if let Ok(store) = app.store("store.json") {
+        store.delete(MODEL_PATH_KEY);
+        store.delete(BINARY_PATH_KEY);
+        let _ = store.save();
+    }
+}

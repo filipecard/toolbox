@@ -5,7 +5,13 @@ import { TOOL_CATALOG } from "../shell/toolCatalog";
 export interface QuickMenuItemSetting {
   toolId: string;
   label: string;
+  /** Shown in the quick menu. */
   enabled: boolean;
+  /** Installed on this computer (Settings → Ferramentas). A removed tool
+   * disappears everywhere — quick menu, shortcuts, windows — and its
+   * downloaded components are deleted. Missing = installed (settings saved
+   * before this existed). */
+  installed?: boolean;
   /** Emoji override for this item's icon. Ignored when `iconImage` is set. */
   icon?: string;
   /** Custom uploaded icon, pre-cropped to a circle, as a PNG data URL. Takes
@@ -146,6 +152,10 @@ export const THEME_PRESETS: { id: string; label: string; colors: ThemeColors }[]
   },
 ];
 
+export function isInstalled(item: Pick<QuickMenuItemSetting, "installed">): boolean {
+  return item.installed !== false;
+}
+
 const SETTINGS_KEY = "settings";
 const SETTINGS_CHANGED_EVENT = "settings-changed";
 
@@ -173,15 +183,19 @@ function defaultSettings(): AppSettings {
   };
 }
 
-/** Merges stored settings with the catalog: new tools added to the catalog
- * later show up appended (enabled), and stored customizations win otherwise. */
+/** Merges stored settings with the catalog: tools added to the catalog in a
+ * later version show up appended but not installed — the user picks them in
+ * Settings → Ferramentas, like everything else they have — and stored
+ * customizations win otherwise. */
 function normalize(stored: Partial<AppSettings> | null): AppSettings {
   const base = defaultSettings();
   if (!stored) return base;
 
   const storedItems = stored.quickMenuItems ?? [];
   const knownIds = new Set(storedItems.map((i) => i.toolId));
-  const missing = base.quickMenuItems.filter((i) => !knownIds.has(i.toolId));
+  const missing = base.quickMenuItems
+    .filter((i) => !knownIds.has(i.toolId))
+    .map((i) => ({ ...i, enabled: false, installed: false }));
 
   return {
     quickMenuItems: [...storedItems, ...missing],

@@ -41,7 +41,7 @@ fn emit_progress(app: &AppHandle, stage: &str, percent: Option<f64>) {
     );
 }
 
-fn whisper_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub fn whisper_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(base.join("whisper"))
 }

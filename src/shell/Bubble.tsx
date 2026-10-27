@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { applyInstallerSetup } from "../shared/installerSetup";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWindowMove } from "./useWindowMove";
 import { expandTool, openNotesBar, openQuickMenu, setBubbleSize } from "../shared/tauri";
@@ -34,6 +35,11 @@ export function Bubble({ toolId }: { toolId: string }) {
   // Only the launcher bubble is user-customizable (it's the only one that's
   // actually a persistent on-screen icon — the others are legacy per-tool
   // bubble ids that aren't created anymore, kept only as a fallback).
+  // First start after installing: the installer's tools and theme.
+  useEffect(() => {
+    if (toolId === "launcher") void applyInstallerSetup().catch(() => {});
+  }, [toolId]);
+
   useEffect(() => {
     if (toolId !== "launcher") return;
     const apply = (s: AppSettings) => {

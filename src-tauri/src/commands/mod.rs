@@ -10,3 +10,5 @@ pub mod whisper_setup;
 pub mod windows;
 pub mod pdf_compress;
 pub mod raw_upload;
+pub mod setup;
+pub mod tool_install;

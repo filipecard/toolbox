@@ -2476,3 +2476,91 @@ button {
   background: #008f32;
   transition: width 0.2s ease;
 }
+.startup-toggle { cursor: pointer; }
+
+/* --- Settings → Ferramentas --- */
+.tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  will-change: transform; /* same scroll-jank fix as .settings-item-list */
+}
+
+.tools-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--theme-input);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.tools-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tools-row-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.tools-row-name {
+  font-size: calc(12px * var(--theme-font-scale, 1));
+  font-weight: 600;
+}
+
+.tools-row-desc,
+.tools-component {
+  font-size: calc(11px * var(--theme-font-scale, 1));
+  color: var(--theme-text-muted);
+}
+
+.tools-component {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 36px;
+}
+
+span.tools-component {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tools-component-ok { color: #3fb96b; }
+.tools-component-missing { color: #e0a33a; }
+
+.tools-install-btn { background: #008f32; color: #fff; }
+
+.tools-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: calc(11px * var(--theme-font-scale, 1));
+  background: color-mix(in srgb, var(--theme-accent) 14%, transparent);
+}
+
+.tools-confirm-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.tools-remove-btn { background: var(--theme-accent); color: #fff; }
+
+.tools-available-toggle {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  color: var(--theme-text);
+  font-size: calc(12px * var(--theme-font-scale, 1));
+  cursor: pointer;
+}

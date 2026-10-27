@@ -103,7 +103,7 @@ impl AccountState {
     /// The plan in force: the verified token's, or Grátis for everything.
     pub fn entitlements(&self) -> Entitlements {
         let inner = self.inner.lock().unwrap();
-        if matches!(inner.status, AccountStatus::DevMode) {
+        if matches!(inner.status, AccountStatus::DevMode) || crate::integrity::debugger_attached() {
             return Entitlements::default();
         }
         match &inner.claims {
@@ -208,7 +208,7 @@ fn trusted_now_s(app: &AppHandle) -> Option<u64> {
 fn verify_cached(app: &AppHandle, user: &ApiUser) -> Result<EntitlementClaims, VerifyError> {
     let token: String = store_get(app, TOKEN_KEY).ok_or(VerifyError::Malformed)?;
     let now = trusted_now_s(app).ok_or(VerifyError::Expired)?;
-    entitlement::verify(&token, &user.id, now)
+    entitlement::verify(&token, &user.id, machine_hash().as_deref(), now)
 }
 
 // --- State transitions ---
@@ -280,17 +280,17 @@ pub async fn access_token(app: &AppHandle) -> Result<String, ApiError> {
 /// Re-fetches the signed plan and updates the status. Network failures
 /// keep the cached plan while it's still valid.
 async fn sync(app: &AppHandle) -> Result<(), ApiError> {
-    let result: Result<(ApiUser, api::EntitlementResponse), ApiError> = async {
+    let result: Result<(ApiUser, api::EntitlementResponse, String), ApiError> = async {
         let (access, user) = refresh_tokens(app).await?;
         let ent: api::EntitlementResponse = api::get("/me/entitlement-token", &access).await?;
-        Ok((user, ent))
+        Ok((user, ent, access))
     }
     .await;
 
     match result {
-        Ok((user, ent)) => {
+        Ok((user, ent, access)) => {
             let now = trusted_now_s(app).unwrap_or_else(now_s);
-            let claims = entitlement::verify(&ent.token, &user.id, now).map_err(|e| ApiError::Api {
+            let claims = entitlement::verify(&ent.token, &user.id, machine_hash().as_deref(), now).map_err(|e| ApiError::Api {
                 status: 500,
                 code: "bad_entitlement".into(),
                 message: format!("O plano recebido do servidor não pôde ser verificado ({e:?})."),
@@ -300,6 +300,7 @@ async fn sync(app: &AppHandle) -> Result<(), ApiError> {
             apply_tool_selection_once(app, &user.id, &ent.tools);
             account(app).inner.lock().unwrap().claims = Some(claims.clone());
             set_status(app, active_status(user, &claims, false));
+            crate::plans::sync_usage(app, &access).await;
             Ok(())
         }
         Err(e) if e.is_session_lost() => {
@@ -328,11 +329,12 @@ async fn sync(app: &AppHandle) -> Result<(), ApiError> {
     }
 }
 
-/// The tools picked on the download page decide which ones show up in the
-/// quick menu — once, on this computer's first sign-in; after that the
+/// The tools picked on the download page decide which ones are installed
+/// (and show up in the quick menu) — once, on this computer's first sign-in; after that the
 /// user's own choices in Settings win.
 fn apply_tool_selection_once(app: &AppHandle, user_id: &str, tools: &[String]) {
-    if tools.is_empty() || store_get::<String>(app, TOOLS_SYNCED_KEY).as_deref() == Some(user_id) {
+    let synced = store_get::<String>(app, TOOLS_SYNCED_KEY);
+    if tools.is_empty() || synced.as_deref() == Some(user_id) || synced.as_deref() == Some(TOOLS_FROM_INSTALLER) {
         return;
     }
     let Ok(store) = app.store(SETTINGS_STORE) else { return };
@@ -344,6 +346,7 @@ fn apply_tool_selection_once(app: &AppHandle, user_id: &str, tools: &[String]) {
                     .and_then(|v| v.as_str())
                     .is_some_and(|id| tools.iter().any(|t| t == id));
                 item["enabled"] = serde_json::json!(enabled);
+                item["installed"] = serde_json::json!(enabled);
             }
             store.set("settings", settings);
             let _ = store.save();
@@ -351,6 +354,14 @@ fn apply_tool_selection_once(app: &AppHandle, user_id: &str, tools: &[String]) {
         }
     }
     store_set(app, TOOLS_SYNCED_KEY, serde_json::json!(user_id));
+}
+
+const TOOLS_FROM_INSTALLER: &str = "installer";
+
+/// The installer already decided which tools show up on this computer:
+/// the website's selection must not override it later.
+pub fn mark_tools_chosen_by_installer(app: &AppHandle) {
+    store_set(app, TOOLS_SYNCED_KEY, serde_json::json!(TOOLS_FROM_INSTALLER));
 }
 
 // --- Windows ---
@@ -479,6 +490,46 @@ pub fn account_status(app: AppHandle) -> AccountStatus {
     account(&app).status()
 }
 
+/// Random id for this computer, kept in the Credential Manager so it
+/// survives reinstalls. The server uses it to count connected computers
+/// (signing in again on the same one replaces its old session).
+fn machine_id() -> Option<String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, "machine-id").ok()?;
+    if let Ok(id) = entry.get_password() {
+        return Some(id);
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    entry.set_password(&id).ok()?;
+    Some(id)
+}
+
+/// What the server stores for this computer (sha256 of "machine:<id>", see
+/// device.ts) — plan tokens carry it and must match.
+fn machine_hash() -> Option<String> {
+    use sha2::{Digest, Sha256};
+    static HASH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| {
+        let id = machine_id()?;
+        let digest = Sha256::digest(format!("machine:{id}").as_bytes());
+        Some(digest.iter().map(|b| format!("{b:02x}")).collect())
+    })
+    .clone()
+}
+
+/// After each counted use: tell the server in the background, so the
+/// account's daily totals survive local files being deleted.
+pub fn report_usage_soon(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if !account(&app).is_active() {
+            return;
+        }
+        if let Ok(token) = access_token(&app).await {
+            crate::plans::sync_usage(&app, &token).await;
+        }
+    });
+}
+
 fn computer_name() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
@@ -494,12 +545,15 @@ pub async fn account_start_login(app: AppHandle) -> Result<AccountStatus, String
     struct Body {
         device_name: String,
         platform: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        machine_id: Option<String>,
     }
     let code: api::DeviceCodeResponse = api::post(
         "/device/code",
         &Body {
             device_name: computer_name(),
             platform: std::env::consts::OS.into(),
+            machine_id: machine_id(),
         },
         None,
     )
