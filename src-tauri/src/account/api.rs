@@ -1,4 +1,4 @@
-//! HTTP client for the ToolBox API (server/).
+//! HTTP client for the ToolBox API (separate repository, not open source).
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
